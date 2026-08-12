@@ -11,12 +11,14 @@ import http from 'node:http';
 import { createReadStream } from 'node:fs';
 import { open, stat, readdir, readFile } from 'node:fs/promises';
 import { spawn, execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { scanLibrary } from './lib/scan.js';
 import { MIME_BY_EXT } from './lib/metadata.js';
 import { readAt } from './lib/util.js';
+import { listRemovableVolumes } from './lib/devices.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -52,32 +54,55 @@ function parseArgs(argv) {
 
 const state = {
   rootDir: null,
+  sources: new Map(),        // srcId -> {id, dir, label, removable, tracks, errors}
   tracks: [],
   byId: new Map(),
-  errors: [],
   scanning: false,
   scannedAt: null,
   ffmpeg: false,
   folderArtCache: new Map(), // dir -> ファイル名 or null
+  deviceLister: listRemovableVolumes,
 };
+
+function sourceId(dir) {
+  return createHash('sha1').update(path.resolve(dir)).digest('hex').slice(0, 12);
+}
+
+/** 全ソースのトラックを一つの索引にまとめ直す */
+function rebuildIndex() {
+  state.tracks = [...state.sources.values()].flatMap((s) => s.tracks);
+  state.byId = new Map(state.tracks.map((t) => [t.id, t]));
+  state.scannedAt = new Date().toISOString();
+  state.folderArtCache.clear();
+}
+
+async function scanSource(src, useCache = true) {
+  console.log(`スキャン中: ${src.dir}`);
+  const t0 = Date.now();
+  const { tracks, errors } = await scanLibrary(src.dir, {
+    useCache,
+    onProgress: (done, total) => console.log(`  ... ${done}/${total}`),
+  });
+  src.tracks = tracks.map((t) => ({ ...t, src: src.id }));
+  src.errors = errors;
+  console.log(`スキャン完了: ${tracks.length} 曲 (${((Date.now() - t0) / 1000).toFixed(1)} 秒)` +
+    (errors.length ? `, 読み取り失敗 ${errors.length} 件` : ''));
+}
 
 async function rescan(useCache = true) {
   if (state.scanning) return;
   state.scanning = true;
   try {
-    console.log(`スキャン中: ${state.rootDir}`);
-    const t0 = Date.now();
-    const { tracks, errors } = await scanLibrary(state.rootDir, {
-      useCache,
-      onProgress: (done, total) => console.log(`  ... ${done}/${total}`),
-    });
-    state.tracks = tracks;
-    state.byId = new Map(tracks.map((t) => [t.id, t]));
-    state.errors = errors;
-    state.scannedAt = new Date().toISOString();
-    state.folderArtCache.clear();
-    console.log(`スキャン完了: ${tracks.length} 曲 (${((Date.now() - t0) / 1000).toFixed(1)} 秒)` +
-      (errors.length ? `, 読み取り失敗 ${errors.length} 件` : ''));
+    for (const src of state.sources.values()) {
+      try {
+        await scanSource(src, useCache);
+      } catch (err) {
+        // デバイスが抜かれた等: 空にして残す (UI から取り外し可能)
+        src.tracks = [];
+        src.errors = [{ path: src.dir, error: String(err?.message ?? err) }];
+      }
+    }
+    rebuildIndex();
   } finally {
     state.scanning = false;
   }
@@ -132,10 +157,13 @@ function notFound(res, msg = 'not found') {
   sendJson(res, 404, { error: msg });
 }
 
-/** ライブラリ内の実ファイルパスを安全に解決する */
+/** トラックの属すソース内の実ファイルパスを安全に解決する */
 function resolveTrackPath(track) {
-  const full = path.resolve(state.rootDir, track.path);
-  if (!full.startsWith(path.resolve(state.rootDir) + path.sep)) return null;
+  const src = state.sources.get(track.src);
+  if (!src) return null;
+  const base = path.resolve(src.dir);
+  const full = path.resolve(base, track.path);
+  if (!full.startsWith(base + path.sep)) return null;
   return full;
 }
 
@@ -162,6 +190,7 @@ async function serveStatic(req, res, urlPath) {
 function serveLibrary(res) {
   const tracks = state.tracks.map((t) => ({
     id: t.id,
+    src: t.src,
     path: t.path,
     ext: t.ext,
     size: t.size,
@@ -176,14 +205,93 @@ function serveLibrary(res) {
     codec: t.codec,
     hasArt: Boolean(t.art),
   }));
+  const sources = [...state.sources.values()].map((s) => ({
+    id: s.id,
+    dir: s.dir,
+    label: s.label,
+    removable: s.removable,
+    tracks: s.tracks.length,
+    errors: s.errors.length,
+  }));
   sendJson(res, 200, {
     dir: state.rootDir,
+    sources,
     scannedAt: state.scannedAt,
     scanning: state.scanning,
     ffmpeg: state.ffmpeg,
-    errors: state.errors.length,
+    errors: sources.reduce((n, s) => n + s.errors, 0),
     tracks,
   });
+}
+
+// ---- デバイス (リムーバブルストレージ) -------------------------------------
+
+async function serveDevices(res) {
+  let volumes = [];
+  try {
+    volumes = await state.deviceLister();
+  } catch {
+    // 検出失敗は「デバイスなし」として扱う
+  }
+  sendJson(res, 200, {
+    devices: volumes.map((v) => ({
+      id: sourceId(v.path),
+      path: v.path,
+      label: v.label,
+      scanned: state.sources.has(sourceId(v.path)),
+    })),
+  });
+}
+
+function readJsonBody(req) {
+  return new Promise((resolve) => {
+    let data = '';
+    req.on('data', (c) => {
+      data += c;
+      if (data.length > 64 * 1024) req.destroy();
+    });
+    req.on('end', () => {
+      try { resolve(JSON.parse(data)); } catch { resolve(null); }
+    });
+    req.on('error', () => resolve(null));
+  });
+}
+
+/** 接続中デバイスをソースとして追加してスキャンする */
+async function addDeviceSource(req, res, useCache) {
+  const body = await readJsonBody(req);
+  const reqPath = typeof body?.path === 'string' ? path.resolve(body.path) : null;
+  let volumes = [];
+  try {
+    volumes = await state.deviceLister();
+  } catch { /* 下の 400 へ */ }
+  // 任意のパスをスキャンさせない: 現在マウント中のデバイスに限定する
+  const vol = volumes.find((v) => path.resolve(v.path) === reqPath);
+  if (!vol) return sendJson(res, 400, { error: '接続中のデバイスではありません' });
+
+  const id = sourceId(vol.path);
+  if (!state.sources.has(id)) {
+    const src = { id, dir: vol.path, label: vol.label, removable: true, tracks: [], errors: [] };
+    state.sources.set(id, src);
+    try {
+      await scanSource(src, useCache);
+    } catch (err) {
+      state.sources.delete(id);
+      return sendJson(res, 500, { error: `スキャンに失敗しました: ${err?.message ?? err}` });
+    }
+    rebuildIndex();
+  }
+  return serveLibrary(res);
+}
+
+/** デバイスソースを一覧から外す (ファイルには触れない) */
+function removeDeviceSource(res, id) {
+  const src = state.sources.get(id);
+  if (!src) return notFound(res, '不明なソース ID');
+  if (!src.removable) return sendJson(res, 400, { error: 'メインライブラリは取り外せません' });
+  state.sources.delete(id);
+  rebuildIndex();
+  return serveLibrary(res);
 }
 
 async function serveStream(req, res, track, query) {
@@ -310,9 +418,16 @@ async function serveArtwork(res, track) {
 
 // ---- サーバ起動 -----------------------------------------------------------
 
-export async function createServer(rootDir, { useCache = true } = {}) {
+export async function createServer(rootDir, { useCache = true, deviceLister } = {}) {
   state.rootDir = path.resolve(rootDir);
+  if (deviceLister) state.deviceLister = deviceLister;
   state.ffmpeg = await detectFfmpeg();
+  state.sources.clear();
+  const primary = {
+    id: sourceId(state.rootDir), dir: state.rootDir,
+    label: 'ライブラリ', removable: false, tracks: [], errors: [],
+  };
+  state.sources.set(primary.id, primary);
   await rescan(useCache);
 
   const server = http.createServer(async (req, res) => {
@@ -325,6 +440,12 @@ export async function createServer(rootDir, { useCache = true } = {}) {
         await rescan(useCache);
         return serveLibrary(res);
       }
+      if (p === '/api/devices') return serveDevices(res);
+      if (p === '/api/source' && req.method === 'POST') {
+        return addDeviceSource(req, res, useCache);
+      }
+      const ms = /^\/api\/source\/([0-9a-f]{12})$/.exec(p);
+      if (ms && req.method === 'DELETE') return removeDeviceSource(res, ms[1]);
 
       let m = /^\/api\/stream\/([0-9a-f]{16})$/.exec(p);
       if (m) {

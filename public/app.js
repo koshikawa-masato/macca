@@ -4,6 +4,7 @@ import { AudioEngine } from './player/engine.js';
 
 const state = {
   tracks: [],
+  sources: [],
   ffmpeg: false,
   dir: '',
   view: 'songs',          // songs | albums | artists
@@ -616,6 +617,68 @@ document.addEventListener('keydown', (e) => {
   else if (e.key === 'ArrowLeft' && e.shiftKey) playPrev();
 });
 
+// ---- デバイス (リムーバブルストレージ) --------------------------------------
+
+let devices = [];
+
+async function refreshDevices() {
+  try {
+    const res = await fetch('/api/devices');
+    devices = (await res.json()).devices ?? [];
+  } catch {
+    devices = [];
+  }
+  renderDevices();
+}
+
+function renderDevices() {
+  const el = $('#devices');
+  if (devices.length === 0) {
+    el.innerHTML = '<div class="dev-empty">未接続</div>';
+    return;
+  }
+  el.innerHTML = devices.map((d) => {
+    const src = (state.sources ?? []).find((s) => s.id === d.id);
+    const count = src ? `${src.tracks} 曲` : '';
+    const btn = d.scanned
+      ? `<button class="dev-btn" data-eject="${d.id}" title="一覧から外す (ファイルには触れません)">✕</button>`
+      : `<button class="dev-btn" data-scan="${esc(d.path)}">スキャン</button>`;
+    return `<div class="dev-row" title="${esc(d.path)}">
+      <span class="dev-name">💾 ${esc(d.label)}</span>
+      <span class="dev-count">${count}</span>${btn}</div>`;
+  }).join('');
+
+  el.querySelectorAll('[data-scan]').forEach((b) => b.addEventListener('click', async () => {
+    b.disabled = true;
+    b.textContent = 'スキャン中…';
+    try {
+      const res = await fetch('/api/source', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: b.dataset.scan }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error ?? res.status);
+      applyLibrary(json);
+      toast('デバイスをスキャンしました');
+    } catch (err) {
+      toast(`デバイスのスキャンに失敗しました: ${err.message}`);
+    }
+    refreshDevices();
+  }));
+  el.querySelectorAll('[data-eject]').forEach((b) => b.addEventListener('click', async () => {
+    try {
+      const res = await fetch(`/api/source/${b.dataset.eject}`, { method: 'DELETE' });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error ?? res.status);
+      applyLibrary(json);
+    } catch (err) {
+      toast(`取り外しに失敗しました: ${err.message}`);
+    }
+    refreshDevices();
+  }));
+}
+
 // ---- 検索 / ナビゲーション ------------------------------------------------
 
 let searchTimer = null;
@@ -657,8 +720,10 @@ function applyLibrary(data) {
   state.tracks = data.tracks;
   state.ffmpeg = data.ffmpeg;
   state.dir = data.dir;
+  state.sources = data.sources ?? [];
   renderStats();
   renderFormatChips();
+  renderDevices();
   render();
   if (data.errors > 0) toast(`${data.errors} 件のファイルが読み取れませんでした`);
 }
@@ -673,4 +738,6 @@ function applyLibrary(data) {
   } catch {
     $('#content').innerHTML = '<div class="loading">ライブラリの読み込みに失敗しました。サーバが起動しているか確認してください。</div>';
   }
+  refreshDevices();
+  setInterval(refreshDevices, 10000); // 抜き差しを 10 秒ごとに反映
 })();

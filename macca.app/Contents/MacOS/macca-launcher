@@ -1,0 +1,21 @@
+#!/bin/sh
+# macca.app ランチャー: リポジトリ直下に置いて使う。
+# ターミナルを開かずにサーバを起動し、ブラウザを開く。
+# ブラウザ (macca のページ) を全部閉じると数秒後に自動終了する。
+
+# GUI 起動では PATH が最小構成のため Homebrew 等を足す
+PATH="$PATH:/opt/homebrew/bin:/usr/local/bin"
+export PATH
+
+# macca.app の親ディレクトリ = リポジトリルート
+ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
+cd "$ROOT" || exit 1
+
+if [ -x "./macca" ]; then
+  exec ./macca --open --exit-on-close
+fi
+if command -v node >/dev/null 2>&1; then
+  exec node server.js --open --exit-on-close
+fi
+osascript -e 'display alert "macca" message "Node.js または macca バイナリが見つかりません。https://nodejs.org からインストールしてください。"'
+exit 1

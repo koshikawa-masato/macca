@@ -110,6 +110,14 @@ export class AudioEngine {
     }
   }
 
+  /** 再生モード変更などで、先読み済みの次曲を破棄して取り直す */
+  refreshNext() {
+    if (!this.current) return;
+    this._unscheduleNext();
+    this.next = null;
+    this._prefetchNext(this._gen);
+  }
+
   // ---- 内部: コンテキスト管理 ----------------------------------------------
 
   async _ensureContext(sampleRate) {

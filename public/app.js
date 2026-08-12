@@ -15,10 +15,12 @@ const state = {
   sortKey: null,
   sortAsc: true,
   renderLimit: 1000,
-  queue: [],              // 再生キュー (トラック配列)
+  queue: [],              // 再生キュー (クリックした曲のアルバム全体)
   queueIdx: -1,
-  shuffle: false,
-  repeat: 'off',          // off | all | one
+  // album: アルバム再生(末尾で停止) / one: 1曲のみ / repeat-one: 1曲リピート
+  // repeat-album: アルバムリピート / shuffle-album: アルバムランダム
+  playMode: 'album',
+  shuffleBag: [],         // アルバムランダムの残り曲 (一巡するまで再シャッフルしない)
   playing: null,          // 再生中トラック
   transcoding: false,
   mode: 'engine',         // engine (Web Audio) | element (<audio> フォールバック)
@@ -345,12 +347,46 @@ function renderStats() {
 // ---- 再生 -----------------------------------------------------------------
 
 function playFromList(id) {
-  const list = visibleTracks();
-  const idx = list.findIndex((t) => t.id === id);
-  if (idx === -1) return;
-  state.queue = list;
-  state.queueIdx = idx;
-  playTrack(list[idx]);
+  const t = visibleTracks().find((x) => x.id === id);
+  if (!t) return;
+  // 再生キューはクリックした曲のアルバム全体 (トラック番号順)
+  const key = albumKey(t);
+  const album = state.tracks
+    .filter((x) => albumKey(x) === key)
+    .sort((a, b) => (a.track ?? 9999) - (b.track ?? 9999) || collator.compare(a.title, b.title));
+  state.queue = album;
+  state.queueIdx = album.indexOf(t);
+  state.shuffleBag = [];
+  playTrack(t);
+}
+
+// ---- 再生モード -------------------------------------------------------------
+
+/** アルバムランダム: 全曲を一巡するまで再シャッフルしない袋方式 */
+function drawFromShuffleBag() {
+  if (state.shuffleBag.length === 0) {
+    const idxs = state.queue.map((_, i) => i)
+      .filter((i) => i !== state.queueIdx || state.queue.length === 1);
+    for (let i = idxs.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [idxs[i], idxs[j]] = [idxs[j], idxs[i]];
+    }
+    state.shuffleBag = idxs;
+  }
+  return state.shuffleBag.pop() ?? -1;
+}
+
+/** 曲が終わったときの次のキュー位置 (-1 = 停止) */
+function nextQueueIdx() {
+  const n = state.queue.length;
+  if (n === 0) return -1;
+  switch (state.playMode) {
+    case 'one': return -1;
+    case 'repeat-one': return state.queueIdx;
+    case 'shuffle-album': return drawFromShuffleBag();
+    case 'repeat-album': return (state.queueIdx + 1) % n;
+    default: return state.queueIdx + 1 < n ? state.queueIdx + 1 : -1; // album
+  }
 }
 
 function updateNowPlayingUI(t) {
@@ -416,24 +452,25 @@ function playTrack(t) {
   updateNowPlayingUI(t);
 }
 
-function nextIdx(delta) {
-  const n = state.queue.length;
-  if (n === 0) return -1;
-  if (state.shuffle && delta > 0) return Math.floor(Math.random() * n);
-  return state.queueIdx + delta;
-}
-
 function playNext(auto = false) {
-  let idx = nextIdx(1);
-  if (idx >= state.queue.length) {
-    if (state.repeat === 'all') idx = 0;
-    else if (auto) return; // 末尾で停止
-    else idx = state.queue.length - 1;
+  let idx;
+  if (auto) {
+    idx = nextQueueIdx();
+  } else if (state.playMode === 'shuffle-album') {
+    idx = drawFromShuffleBag();
+  } else {
+    // 手動の「次へ」はモードによらずアルバム内を進む
+    idx = state.queueIdx + 1;
+    if (idx >= state.queue.length) {
+      idx = state.playMode === 'repeat-album' ? 0 : -1;
+    }
   }
-  if (idx >= 0 && idx < state.queue.length) {
-    state.queueIdx = idx;
-    playTrack(state.queue[idx]);
+  if (idx === -1 || !state.queue[idx]) {
+    updatePlayButton();
+    return; // 停止
   }
+  state.queueIdx = idx;
+  playTrack(state.queue[idx]);
 }
 
 function playPrev() {
@@ -444,7 +481,7 @@ function playPrev() {
     return;
   }
   let idx = state.queueIdx - 1;
-  if (idx < 0) idx = state.repeat === 'all' ? state.queue.length - 1 : 0;
+  if (idx < 0) idx = state.playMode === 'repeat-album' ? state.queue.length - 1 : 0;
   state.queueIdx = idx;
   if (state.queue[idx]) playTrack(state.queue[idx]);
 }
@@ -488,13 +525,8 @@ function updateMediaSession(t) {
 if (engine) {
   engine.setNormalization(state.normalize);
   engine.nextProvider = () => {
-    if (state.repeat === 'one') return state.playing;
-    let idx = nextIdx(1);
-    if (idx >= state.queue.length) {
-      if (state.repeat !== 'all') return null;
-      idx = 0;
-    }
-    return state.queue[idx] ?? null;
+    const idx = nextQueueIdx();
+    return idx === -1 ? null : state.queue[idx] ?? null;
   };
   engine.ontrackstart = (t, { auto }) => {
     if (!auto) return; // 手動再生は playTrack 側で UI 更新済み
@@ -536,7 +568,7 @@ audio.addEventListener('timeupdate', () => {
 });
 audio.addEventListener('ended', () => {
   if (state.mode !== 'element') return;
-  if (state.repeat === 'one') {
+  if (state.playMode === 'repeat-one') {
     audio.currentTime = 0;
     audio.play().catch(() => {});
   } else {
@@ -569,14 +601,20 @@ seekbar.addEventListener('change', () => {
 $('#btn-play').addEventListener('click', togglePlay);
 $('#btn-next').addEventListener('click', () => playNext());
 $('#btn-prev').addEventListener('click', playPrev);
-$('#btn-shuffle').addEventListener('click', function () {
-  state.shuffle = !state.shuffle;
-  this.classList.toggle('on', state.shuffle);
-});
-$('#btn-repeat').addEventListener('click', function () {
-  state.repeat = state.repeat === 'off' ? 'all' : state.repeat === 'all' ? 'one' : 'off';
-  this.classList.toggle('on', state.repeat !== 'off');
-  this.textContent = state.repeat === 'one' ? '🔂' : '🔁';
+
+const modeSel = $('#play-mode');
+{
+  const saved = localStorage.getItem('macca-playmode');
+  if (['album', 'one', 'repeat-one', 'repeat-album', 'shuffle-album'].includes(saved)) {
+    state.playMode = saved;
+  }
+  modeSel.value = state.playMode;
+}
+modeSel.addEventListener('change', () => {
+  state.playMode = modeSel.value;
+  localStorage.setItem('macca-playmode', state.playMode);
+  state.shuffleBag = [];
+  if (state.mode === 'engine') engine?.refreshNext(); // 先読み済みの次曲を取り直す
 });
 
 const volbar = $('#volbar');

@@ -41,11 +41,16 @@
   </div>
   <div class="controls">
     <div class="buttons">
-      <button id="btn-shuffle" title="シャッフル">⤨</button>
       <button id="btn-prev" title="前の曲">⏮</button>
       <button id="btn-play" class="play-btn" title="再生 / 一時停止">▶</button>
       <button id="btn-next" title="次の曲">⏭</button>
-      <button id="btn-repeat" title="リピート">🔁</button>
+      <select id="play-mode" title="再生モード">
+        <option value="album">アルバム再生</option>
+        <option value="one">1曲のみ</option>
+        <option value="repeat-one">1曲リピート</option>
+        <option value="repeat-album">アルバムリピート</option>
+        <option value="shuffle-album">アルバムランダム</option>
+      </select>
     </div>
     <div class="seek">
       <span id="time-cur">0:00</span>

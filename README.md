@@ -26,14 +26,19 @@ Node.js 18 以上があれば動きます（macOS / Linux / Windows）。
 ```sh
 git clone https://github.com/koshikawa-masato/macca.git
 cd macca
-node server.js ~/Music/MyLibrary
+node server.js
 ```
 
 起動したら `http://127.0.0.1:8323/` をブラウザで開くだけです。
 
 ```
-使い方: node server.js <音楽ディレクトリ> [--port 8323] [--host 127.0.0.1] [--no-cache]
+使い方: node server.js [音楽ディレクトリ] [--port 8323] [--host 127.0.0.1] [--no-cache]
 ```
+
+ディレクトリを省略すると、**iTunes / ミュージックの標準ライブラリを自動検出**します
+（優先順: macOS ミュージック.app `~/Music/Music/Media.localized/Music` →
+Windows 版 Apple Music → iTunes `~/Music/iTunes/iTunes Media` → `~/Music`）。
+もちろん任意のフォルダを明示的に指定しても構いません。
 
 - 初回スキャン結果は `~/.cache/macca/` にキャッシュされ、2 回目以降の起動は高速です
   （ファイルの更新日時・サイズが変わったものだけ再読み込み）

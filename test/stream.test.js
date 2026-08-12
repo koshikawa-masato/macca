@@ -43,7 +43,7 @@ test('ALACリーダー: 窓読みが全体デコードと一致する', async ()
   const full = decodeAlacTrack(demuxMp4(bytes), bytes, await loadAlac(
     await readFile(path.join(__dirname, '../server/static/public/player/alac.wasm'))));
 
-  const r = createStreamReader({ ext: '.m4a' }, bytes, { alacModule: mod });
+  const r = await createStreamReader({ ext: '.m4a' }, bytes, { alacModule: mod });
   assert.ok(r);
   assert.equal(r.totalSamples, full.length);
   // パケット境界をまたぐ中途半端な位置から読む
@@ -59,7 +59,7 @@ test('ALACリーダー: 窓読みが全体デコードと一致する', async ()
 
 test('WAVリーダー: 窓読みが波形と一致する', async () => {
   const bytes = new Uint8Array(buildWav({ title: 't', artist: 'a', album: 'x', seconds: 2 }));
-  const r = createStreamReader({ ext: '.wav' }, bytes, {});
+  const r = await createStreamReader({ ext: '.wav' }, bytes, {});
   assert.ok(r);
   assert.equal(r.sampleRate, 8000);
   assert.equal(r.totalSamples, 16000);
@@ -74,7 +74,7 @@ test('WAVリーダー: 窓読みが波形と一致する', async () => {
 test('AIFFリーダー: 窓読みが全体デコードと一致する', async () => {
   const bytes = new Uint8Array(buildAiff({ title: 't' }, null, 2));
   const full = decodeAiff(bytes);
-  const r = createStreamReader({ ext: '.aiff' }, bytes, {});
+  const r = await createStreamReader({ ext: '.aiff' }, bytes, {});
   assert.ok(r);
   assert.equal(r.totalSamples, full.length);
   const w = await r.readWindow(7000, 4000);
@@ -84,7 +84,7 @@ test('AIFFリーダー: 窓読みが全体デコードと一致する', async ()
   }
 });
 
-test('リーダー対象外の形式は null (全体デコードへフォールバック)', () => {
-  assert.equal(createStreamReader({ ext: '.mp3' }, new Uint8Array(64), {}), null);
-  assert.equal(createStreamReader({ ext: '.wav' }, new Uint8Array(8), {}), null, '壊れたWAV');
+test('リーダー対象外の形式は null (全体デコードへフォールバック)', async () => {
+  assert.equal(await createStreamReader({ ext: '.mp3' }, new Uint8Array(64), {}), null);
+  assert.equal(await createStreamReader({ ext: '.wav' }, new Uint8Array(8), {}), null, '壊れたWAV');
 });

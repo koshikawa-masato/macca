@@ -12,7 +12,7 @@ import { decodeAiff } from './decode-aiff.js';
 import { probeSampleRate } from './probe.js';
 import { computeTrackGain } from './loudness.js';
 import { loadAlac, decodeAlacTrack } from './alac.js';
-import { createStreamReader } from './stream.js';
+import { createStreamReader, createProgressiveSource } from './stream.js';
 
 const ENGINE_EXTS = new Set([
   '.mp3', '.aac', '.m4a', '.m4b', '.flac', '.wav', '.aif', '.aiff', '.aifc',
@@ -183,7 +183,7 @@ export class AudioEngine {
   setNormalization(on) {
     this.normalization = on;
     for (const slot of [this.current, this.next?.entry]) {
-      if (slot?.gainNode) slot.gainNode.gain.value = on ? slot.trackGain : 1;
+      if (slot?.gainNode) slot.gainNode.gain.value = on && slot.trackGain != null ? slot.trackGain : 1;
     }
   }
 
@@ -191,7 +191,7 @@ export class AudioEngine {
   refreshNext() {
     if (!this.current) return;
     this._unscheduleNext();
-    this.next = null;
+    this._dropNext();
     this._prefetchNext(this._gen);
     this._schedulePrefetch(this._gen);
   }
@@ -228,12 +228,6 @@ export class AudioEngine {
 
   // ---- 内部: デコード -------------------------------------------------------
 
-  async _fetchBytes(track) {
-    const res = await fetch(this.streamUrl(track));
-    if (!res.ok) throw new Error(`fetch ${res.status}`);
-    return new Uint8Array(await res.arrayBuffer());
-  }
-
   async _alacModule() {
     this._alacPromise ??= (async () => {
       const res = await fetch(this.wasmUrl);
@@ -244,7 +238,7 @@ export class AudioEngine {
   }
 
   /**
-   * トラックをデコードして {buffer, trackGain} を返す。
+   * トラックをデコードして {buffer|reader, trackGain} を返す。
    * forPlayback 時のみ AudioContext を音源レートで作り直してよい。
    */
   async _decode(track, { forPlayback = false } = {}) {
@@ -254,27 +248,26 @@ export class AudioEngine {
       // gainNode/source は呼び出し側が書き足すため、新しいオブジェクトで返す
       return { buffer: cached.buffer, trackGain: cached.trackGain };
     }
-    const bytes = await this._fetchBytes(track);
-    return this._decodeBytes(track, bytes, { forPlayback });
+    const source = await createProgressiveSource(this.streamUrl(track));
+    return this._decodeBytes(track, source, { forPlayback });
   }
 
   /**
-   * ストリーミング可能な形式なら窓読みリーダーを作る (全体を展開しない)。
+   * ストリーミング可能な形式なら窓読みリーダーを作る (全体を待たない)。
    * 対象外・解析失敗・レート不一致は null → 全体デコードにフォールバック。
    */
-  async _tryCreateReader(track, bytes, forPlayback) {
+  async _tryCreateReader(track, source, forPlayback) {
     const ext = track.ext;
     if (!['.flac', '.m4a', '.m4b', '.wav', '.aif', '.aiff', '.aifc'].includes(ext)) return null;
     let alacModule = null;
     let decodeFn = null;
     let ctxSampleRate = 0;
     if (ext === '.m4a' || ext === '.m4b') {
-      const demuxed = demuxMp4(bytes);
-      if (demuxed?.codec !== 'alac' || !demuxed.cookie) return null; // AAC は全体デコードへ
-      alacModule = await this._alacModule();
+      alacModule = await this._alacModule(); // AAC だった場合はリーダー側が null を返す
     } else if (ext === '.flac') {
       // FLAC はネイティブデコーダに窓を渡すため、コンテキストが音源レートであることが前提
-      const rate = probeSampleRate(bytes, ext)?.sampleRate;
+      await source.waitFor(Math.min(source.total, 64 * 1024));
+      const rate = probeSampleRate(source.bytes.subarray(0, source.received), ext)?.sampleRate;
       if (!rate) return null;
       if (forPlayback) await this._ensureContext(rate);
       else if (!this.ctx) await this._ensureContext(rate);
@@ -282,29 +275,31 @@ export class AudioEngine {
       ctxSampleRate = this.ctx.sampleRate;
       decodeFn = (ab) => this.ctx.decodeAudioData(ab);
     }
-    return createStreamReader(track, bytes, { alacModule, decodeAudioData: decodeFn, ctxSampleRate });
+    return createStreamReader(track, source, { alacModule, decodeAudioData: decodeFn, ctxSampleRate });
   }
 
-  /** ストリーム再生用の正規化ゲイン (キャッシュ or 先頭 30 秒からの実測) */
-  async _gainForStream(track, reader) {
-    const gains = this._loadGains();
-    let g = gains[track.id];
-    if (typeof g !== 'number') {
-      const win = await reader.readWindow(0, Math.min(reader.totalSamples, reader.sampleRate * 30));
-      g = Math.round(computeTrackGain(win.channelData, reader.sampleRate) * 1000) / 1000;
-      gains[track.id] = g;
-      this._scheduleGainsSave();
-    }
+  /** 正規化ゲイン: キャッシュがあればそれを、なければ null (最初の窓から実測する) */
+  _gainCached(track) {
+    const g = this._loadGains()[track.id];
+    return typeof g === 'number' ? g : null;
+  }
+
+  /** デコード済みの窓からゲインを実測してキャッシュする */
+  _gainFromWindow(track, channelData, sampleRate) {
+    const g = Math.round(computeTrackGain(channelData, sampleRate) * 1000) / 1000;
+    this._loadGains()[track.id] = g;
+    this._scheduleGainsSave();
     return g;
   }
 
-  /** 取得済みバイト列からデコードする (_prefetchNext が先に fetch だけ済ませるため分離) */
-  async _decodeBytes(track, bytes, { forPlayback = false } = {}) {
-    const reader = await this._tryCreateReader(track, bytes, forPlayback);
+  /** 取得中ソース (またはバイト列) からデコードする */
+  async _decodeBytes(track, source, { forPlayback = false } = {}) {
+    const reader = await this._tryCreateReader(track, source, forPlayback);
     if (reader) {
-      const trackGain = await this._gainForStream(track, reader);
-      return { reader, trackGain };
+      return { reader, trackGain: this._gainCached(track) };
     }
+    // 全体デコードへフォールバック (受信完了を待つ)
+    const bytes = await source.waitAll();
     const ext = track.ext;
     let buffer;
 
@@ -387,7 +382,7 @@ export class AudioEngine {
 
   _makeGainNode(trackGain) {
     const g = this.ctx.createGain();
-    g.gain.value = this.normalization ? trackGain : 1;
+    g.gain.value = this.normalization && trackGain != null ? trackGain : 1;
     g.connect(this.masterGain);
     return g;
   }
@@ -474,6 +469,11 @@ export class AudioEngine {
           this._armStreamEnd(cur, gen);
           return;
         }
+        if (cur.trackGain == null) {
+          // ゲイン未実測なら最初の窓から求める (音が出る前に設定される)
+          cur.trackGain = this._gainFromWindow(cur.track, win.channelData, rate);
+          cur.gainNode.gain.value = this.normalization ? cur.trackGain : 1;
+        }
         const buf = channelsToBuffer(win.channelData, win.length, rate);
         const source = this._makeSource(buf, cur.gainNode);
         source.start(cur.startTime + cur.nextSample / rate);
@@ -542,7 +542,19 @@ export class AudioEngine {
       this.current = null;
     }
     this._unscheduleNext();
-    this.next?.entry?.reader?.destroy?.();
+    this._dropNext();
+  }
+
+  /** 先読み中の次曲を破棄する (取得中のソースも中断) */
+  _dropNext() {
+    const nx = this.next;
+    if (nx) {
+      if (nx.entry?.reader) {
+        nx.entry.reader.destroy?.();
+      } else {
+        nx.sourcePromise?.then((s) => s?.cancel?.()).catch(() => {});
+      }
+    }
     this.next = null;
   }
 
@@ -592,26 +604,32 @@ export class AudioEngine {
 
     this.next = {
       track,
-      bytesPromise: this._fetchBytes(track).catch((err) => ({ error: err })),
+      // プログレッシブ取得を即開始 (受信しながらデコード段階を待つ)
+      sourcePromise: createProgressiveSource(this.streamUrl(track)).catch((err) => ({ error: err })),
       decodePromise: null,
       entry: null,
       source: null,
     };
   }
 
-  /** next の取得済みバイト列をデコードする (多重実行しないよう promise を共有) */
+  /** next の取得中ソースをデコードする (多重実行しないよう promise を共有) */
   async _ensureNextDecoded(next, gen) {
     next.decodePromise ??= (async () => {
-      const bytes = await next.bytesPromise;
-      if (!bytes || bytes.error) return { error: bytes?.error ?? new Error('fetch failed') };
+      const source = await next.sourcePromise;
+      if (!source || source.error) return { error: source?.error ?? new Error('fetch failed') };
       try {
-        const entry = await this._decodeBytes(next.track, bytes);
+        const entry = await this._decodeBytes(next.track, source);
         if (entry.reader) {
           // ギャップレス連結用に先頭窓だけ AudioBuffer 化しておく
           const rate = entry.reader.sampleRate;
           const win = await entry.reader.readWindow(0,
             Math.min(entry.reader.totalSamples, Math.floor(STREAM_WINDOW_SEC * rate)));
-          entry.firstBuffer = channelsToBuffer(win.channelData, win.length, rate);
+          if (win.length > 0) {
+            if (entry.trackGain == null) {
+              entry.trackGain = this._gainFromWindow(next.track, win.channelData, rate);
+            }
+            entry.firstBuffer = channelsToBuffer(win.channelData, win.length, rate);
+          }
         }
         return entry;
       } catch (err) {

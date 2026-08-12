@@ -21,7 +21,7 @@ import { readAt } from './lib/util.js';
 import { listRemovableVolumes } from './lib/devices.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PUBLIC_DIR = path.join(__dirname, 'public');
+const PUBLIC_DIR = path.join(__dirname, 'server', 'static', 'public');
 
 const STATIC_TYPES = {
   '.html': 'text/html; charset=utf-8',

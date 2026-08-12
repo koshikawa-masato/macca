@@ -18,12 +18,8 @@ mkdir -p "$OUT" "$TMP"
 trap 'rm -rf "$TMP"' EXIT INT TERM
 
 echo "== 1/3 Windows 用 macca.exe をビルド (public/ 埋め込み・GUI サブシステム)"
-cp -R "$ROOT"/. "$TMP/src"
-rm -rf "$TMP/src/.git" "$TMP/src/build/release" "$TMP/src/server/static/public"
-mkdir -p "$TMP/src/server/static"
-cp -R "$ROOT/public" "$TMP/src/server/static/public"
-(cd "$TMP/src" && CGO_ENABLED=0 GOOS=windows GOARCH=amd64 \
-  go build -trimpath -ldflags "-s -w -H windowsgui" -o "$TMP/macca.exe" ./server)
+(cd "$ROOT" && CGO_ENABLED=0 GOOS=windows GOARCH=amd64 \
+  go build -trimpath -ldflags "-s -w -H windowsgui" -o "$TMP/macca.exe" ./cmd/macca)
 
 echo "== 2/3 ショートカット用アイコン (.ico) を生成"
 node "$ROOT/build/msi/make-ico.mjs" \

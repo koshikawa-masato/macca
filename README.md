@@ -31,6 +31,12 @@ Node.js などの事前インストールは不要です。
 インストーラは未署名のため初回のみ OS の警告が出ます。
 macOS は右クリック →「開く」、Windows は「詳細情報」→「実行」で通過できます。
 
+Go が入っているなら 1 コマンドでも入ります（フロントエンド同梱・全 OS）:
+
+```sh
+go install github.com/koshikawa-masato/macca/cmd/macca@latest
+```
+
 ## 使い方
 
 起動するとブラウザが開き、**iTunes / ミュージックの標準ライブラリを自動検出**します
@@ -141,7 +147,7 @@ HTTP API・キャッシュ形式まで完全互換です（パリティテスト
 ```sh
 git clone https://github.com/koshikawa-masato/macca.git
 cd macca
-go run ./server        # Go 1.23+ の場合
+go run ./cmd/macca     # Go 1.23+ の場合
 node server.js         # Node.js 18+ の場合
 ```
 
@@ -158,7 +164,7 @@ node server.js         # Node.js 18+ の場合
 
 ```sh
 npm test                                  # 全テスト (Node 実装 + フロントのデコーダ)
-go build -o macca ./server && \
+go build -o macca ./cmd/macca && \
   MACCA_SERVER_BIN=./macca npm test       # Go 実装に対する受け入れ + パリティテスト
 ```
 
@@ -166,10 +172,11 @@ go build -o macca ./server && \
 本物の ALAC ファイルで、パーサ・ブラウザ側デコーダ（波形復元精度まで）・HTTP API を検証します。
 
 ```
-server/              Go サーバ (リリース版の実体。フロントを embed 可能)
+cmd/macca/           Go サーバのエントリポイント (go install 対応)
+server/              Go サーバ本体 (リリース版の実体)
+server/static/public フロントエンド (素の HTML/CSS/JS。Go バイナリに embed される)
+  └ player/          Web Audio 再生エンジン + ALAC(WASM)/AIFF デコーダ
 server.js + lib/     Node.js サーバ (同一挙動のリファレンス実装)
-public/              フロントエンド (素の HTML/CSS/JS)
-public/player/       Web Audio 再生エンジン + ALAC(WASM)/AIFF デコーダ
 macca.app/           macOS 用アプリバンドル
 build/
   alac-wasm/         alac.wasm のビルド

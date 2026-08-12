@@ -1,4 +1,4 @@
-package main
+package server
 
 import (
 	"bytes"
@@ -192,7 +192,8 @@ func (s *stringList) Set(v string) error {
 	return nil
 }
 
-func main() {
+// Main は macca サーバのエントリポイント (cmd/macca から呼ばれる)
+func Main() {
 	opts := parseArgs(os.Args[1:])
 	if opts.dir == "" {
 		dir, err := findDefaultLibrary()
@@ -346,13 +347,9 @@ func resolvePublicDir(flagValue string) string {
 		}
 		return flagValue
 	}
-	if p, err := filepath.Abs("public"); err == nil {
-		if st, statErr := os.Stat(p); statErr == nil && st.IsDir() {
-			return p
-		}
-	}
-	if exe, err := os.Executable(); err == nil {
-		p := filepath.Join(filepath.Dir(exe), "public")
+	// 開発時: リポジトリ直下で実行しているならディスク上のフロントを配信
+	// (embed 済みでも、フロント編集を再ビルドなしで反映できるように)
+	if p, err := filepath.Abs(filepath.Join("server", "static", "public")); err == nil {
 		if st, statErr := os.Stat(p); statErr == nil && st.IsDir() {
 			return p
 		}

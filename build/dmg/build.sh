@@ -15,12 +15,8 @@ mkdir -p "$OUT" "$TMP"
 trap 'rm -rf "$TMP"; hdiutil detach "/Volumes/macca" >/dev/null 2>&1 || true' EXIT INT TERM
 
 echo "== 1/4 ユニバーサル Go サーバをビルド (public/ 埋め込み)"
-cp -R "$ROOT"/. "$TMP/src"
-rm -rf "$TMP/src/.git" "$TMP/src/build/release" "$TMP/src/server/static/public"
-mkdir -p "$TMP/src/server/static"
-cp -R "$ROOT/public" "$TMP/src/server/static/public"
-(cd "$TMP/src" && CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o "$TMP/server-arm64" ./server)
-(cd "$TMP/src" && CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o "$TMP/server-amd64" ./server)
+(cd "$ROOT" && CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o "$TMP/server-arm64" ./cmd/macca)
+(cd "$ROOT" && CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o "$TMP/server-amd64" ./cmd/macca)
 lipo -create -output "$TMP/macca-server" "$TMP/server-arm64" "$TMP/server-amd64"
 
 echo "== 2/4 自己完結型 macca.app を組み立て"

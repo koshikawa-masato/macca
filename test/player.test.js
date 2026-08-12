@@ -7,11 +7,11 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { probeSampleRate } from '../public/player/probe.js';
-import { decodeAiff } from '../public/player/decode-aiff.js';
-import { demuxMp4 } from '../public/player/demux-mp4.js';
-import { loadAlac, decodeAlacTrack } from '../public/player/alac.js';
-import { computeTrackGain } from '../public/player/loudness.js';
+import { probeSampleRate } from '../server/static/public/player/probe.js';
+import { decodeAiff } from '../server/static/public/player/decode-aiff.js';
+import { demuxMp4 } from '../server/static/public/player/demux-mp4.js';
+import { loadAlac, decodeAlacTrack } from '../server/static/public/player/alac.js';
+import { computeTrackGain } from '../server/static/public/player/loudness.js';
 import { buildWav, buildFlac, buildMp3, buildAiff } from './fixtures.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -62,7 +62,7 @@ test('demuxMp4: ALAC の m4a からクッキーとパケット列を取り出す
 
 test('ALAC: wasm デコーダが波形をロスレスに復元する', async () => {
   const bytes = new Uint8Array(await readFile(path.join(__dirname, 'data/alac-sine.m4a')));
-  const wasm = await readFile(path.join(__dirname, '../public/player/alac.wasm'));
+  const wasm = await readFile(path.join(__dirname, '../server/static/public/player/alac.wasm'));
   const mod = await loadAlac(wasm);
   const d = demuxMp4(bytes);
   const pcm = decodeAlacTrack(d, bytes, mod);

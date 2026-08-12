@@ -30,6 +30,6 @@ em++ -Os --no-entry \
   alac-src/codec/matrix_dec.c \
   alac-src/codec/ALACBitUtilities.c \
   alac-src/codec/EndianPortable.c \
-  -o ../../public/player/alac.wasm
+  -o ../../server/static/public/player/alac.wasm
 
-ls -la ../../public/player/alac.wasm
+ls -la ../../server/static/public/player/alac.wasm

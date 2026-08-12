@@ -17,7 +17,7 @@ const state = {
   renderLimit: 1000,
   queue: [],              // 再生キュー (クリックした曲のアルバム全体)
   queueIdx: -1,
-  // album: アルバム再生(末尾で停止) / one: 1曲のみ / repeat-one: 1曲リピート
+  // album: アルバム再生(末尾で停止) / one: 1回再生 / repeat-one: 1曲リピート
   // repeat-album: アルバムリピート / shuffle-album: アルバムランダム
   playMode: 'album',
   shuffleBag: [],         // アルバムランダムの残り曲 (一巡するまで再シャッフルしない)

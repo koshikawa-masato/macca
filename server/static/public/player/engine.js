@@ -90,9 +90,21 @@ export class AudioEngine {
   async play(track) {
     this.kickContext();
     const gen = ++this._gen;
+    // 「次の曲へ」で選ばれた曲なら、先読み済みの取得/デコード結果を使い回す
+    const reuse = this.next && this.next.track === track && !this.next.handoff ? this.next : null;
     this._teardownPlayback();
 
-    const decoded = await this._decode(track, { forPlayback: true });
+    let decoded = null;
+    if (reuse) {
+      const entry = reuse.entry ?? await this._ensureNextDecoded(reuse, gen);
+      if (gen !== this._gen) return;
+      if (entry && !entry.error) {
+        decoded = { buffer: entry.buffer, trackGain: entry.trackGain };
+      }
+    }
+    if (!decoded) {
+      decoded = await this._decode(track, { forPlayback: true });
+    }
     if (gen !== this._gen) return; // 待っている間に別の再生が始まった
 
     await this._ensureContext(decoded.buffer.sampleRate);
@@ -101,6 +113,7 @@ export class AudioEngine {
 
     this._startCurrent(track, decoded, 0, this.ctx.currentTime);
     this.ontrackstart?.(track, { auto: false });
+    this._prefetchNext(gen);
     this._schedulePrefetch(gen);
   }
 
@@ -130,16 +143,9 @@ export class AudioEngine {
     cur.source.onended = this._makeEndedHandler(cur.source, this._gen);
     cur.source.start(now, offset);
     cur.startTime = now - offset;
-    // シーク位置に応じて先読みを取り直す。終端から離れたら
-    // 確保済みの次曲は解放してメモリを 1 曲分に戻す
-    if (this.next && cur.buffer.duration - offset > 60) {
-      this.next = null;
-    }
-    if (this.next) {
-      this._scheduleNextIfReady();
-    } else {
-      this._schedulePrefetch(this._gen);
-    }
+    // 新しい位置に合わせて次曲の連結とデコードタイマーを組み直す
+    this._scheduleNextIfReady();
+    this._schedulePrefetch(this._gen);
   }
 
   stop() {
@@ -164,6 +170,7 @@ export class AudioEngine {
     if (!this.current) return;
     this._unscheduleNext();
     this.next = null;
+    this._prefetchNext(this._gen);
     this._schedulePrefetch(this._gen);
   }
 
@@ -221,13 +228,17 @@ export class AudioEngine {
   async _decode(track, { forPlayback = false } = {}) {
     const cached = this._bufferCache.get(track.id);
     if (cached) {
-      this._cachePut(track.id, cached.buffer, cached.trackGain); // LRU 更新
       if (forPlayback) await this._ensureContext(cached.buffer.sampleRate);
       // gainNode/source は呼び出し側が書き足すため、新しいオブジェクトで返す
       return { buffer: cached.buffer, trackGain: cached.trackGain };
     }
-    const ext = track.ext;
     const bytes = await this._fetchBytes(track);
+    return this._decodeBytes(track, bytes, { forPlayback });
+  }
+
+  /** 取得済みバイト列からデコードする (_prefetchNext が先に fetch だけ済ませるため分離) */
+  async _decodeBytes(track, bytes, { forPlayback = false } = {}) {
+    const ext = track.ext;
     let buffer;
 
     if (ext === '.m4a' || ext === '.m4b') {
@@ -369,24 +380,28 @@ export class AudioEngine {
   }
 
   /**
-   * 次曲の先読みを現曲の終端 45 秒前まで遅らせる。
-   * 再生開始と同時に確保するとデコード済み PCM を常時 2 曲分 (数百 MB)
-   * 抱えることになるため、ギャップレスに間に合う直前まで待つ。
+   * 次曲の「デコード」を現曲の終端 45 秒前まで遅らせるタイマー。
+   * (取得は _prefetchNext が再生開始直後に済ませて圧縮のまま保持している。
+   *  展開まで即時に行うと非圧縮 PCM を常時 2 曲分抱えるため、直前まで待つ)
    */
   _schedulePrefetch(gen) {
     clearTimeout(this._prefetchTimer);
     const lead = 45;
     const remain = this.duration - this.currentTime;
     if (remain - lead < 0.5) {
-      this._prefetchNext(gen);
+      this._decodeNext(gen);
       return;
     }
     this._prefetchTimer = setTimeout(() => {
-      if (gen === this._gen && this.current) this._prefetchNext(gen);
+      if (gen === this._gen && this.current) this._decodeNext(gen);
     }, (remain - lead) * 1000);
   }
 
-  /** 次曲を先読みデコードし、可能なら現曲の終端にスケジュールする */
+  /**
+   * 次曲の「取得」だけを先に済ませる (圧縮のままメモリに保持)。
+   * 展開 (デコード、非圧縮で約 100MB/5 分) は _decodeNext が終端間際に行う。
+   * これで「次の曲へ」を押したときの待ちがデコードのみ (約 1 秒) になる。
+   */
   _prefetchNext(gen) {
     const track = this.nextProvider?.() ?? null;
     if (!track) { this.next = null; return; }
@@ -398,16 +413,51 @@ export class AudioEngine {
     }
 
     // リピート 1 曲などで現曲と同じトラックならデコード結果を使い回す
-    const promise = (track === this.current?.track)
-      ? Promise.resolve({ buffer: this.current.buffer, trackGain: this.current.trackGain })
-      : this._decode(track).catch((err) => ({ error: err }));
+    if (track === this.current?.track) {
+      this.next = {
+        track,
+        entry: { buffer: this.current.buffer, trackGain: this.current.trackGain },
+        source: null,
+      };
+      return;
+    }
 
-    this.next = { track, promise, entry: null, source: null };
-    promise.then((entry) => {
-      if (gen !== this._gen || this.next?.promise !== promise) return;
-      this.next.entry = entry;
-      this._scheduleNextIfReady();
-    });
+    this.next = {
+      track,
+      bytesPromise: this._fetchBytes(track).catch((err) => ({ error: err })),
+      decodePromise: null,
+      entry: null,
+      source: null,
+    };
+  }
+
+  /** next の取得済みバイト列をデコードする (多重実行しないよう promise を共有) */
+  async _ensureNextDecoded(next, gen) {
+    next.decodePromise ??= (async () => {
+      const bytes = await next.bytesPromise;
+      if (!bytes || bytes.error) return { error: bytes?.error ?? new Error('fetch failed') };
+      try {
+        return await this._decodeBytes(next.track, bytes);
+      } catch (err) {
+        return { error: err };
+      }
+    })();
+    const entry = await next.decodePromise;
+    if (gen === this._gen && this.next === next && !entry.error) {
+      next.entry = entry;
+    }
+    return entry;
+  }
+
+  /** タイマー起点: 次曲をデコードして現曲の終端に連結する */
+  async _decodeNext(gen) {
+    const next = this.next;
+    if (!next || next.handoff || gen !== this._gen) return;
+    if (!next.entry) {
+      const entry = await this._ensureNextDecoded(next, gen);
+      if (gen !== this._gen || this.next !== next || entry.error) return;
+    }
+    this._scheduleNextIfReady();
   }
 
   _scheduleNextIfReady() {
@@ -439,12 +489,12 @@ export class AudioEngine {
       return;
     }
 
-    const entry = next.entry ?? await next.promise;
+    const entry = next.entry ?? await this._ensureNextDecoded(next, gen);
     if (gen !== this._gen) return;
     if (!entry || entry.error) {
       this.next = null;
       if (entry?.error && next.track) {
-        // 次曲のデコードに失敗しても再生列を止めない: <audio> 再生に委譲する
+        // 次曲の取得/デコードに失敗しても再生列を止めない: <audio> 再生に委譲する
         console.warn('次曲のデコードに失敗したため <audio> 再生に切り替えます:', entry.error);
         this.onhandoff?.(next.track);
         return;
@@ -462,6 +512,7 @@ export class AudioEngine {
     this.next = null;
     this._startCurrent(next.track, entry, 0, startTime);
     this.ontrackstart?.(next.track, { auto: true });
+    this._prefetchNext(gen);
     this._schedulePrefetch(gen);
   }
 }

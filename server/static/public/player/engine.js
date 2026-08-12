@@ -53,6 +53,8 @@ export class AudioEngine {
     this._gains = null;
     this._gainsSaveTimer = null;
     this._bufferCache = new Map(); // trackId -> {buffer, trackGain} 直近のデコード結果
+    // 診断用カウンタ (デバッグモードで表示。フリーズ解析の手がかり)
+    this.stats = { play: 0, advance: 0, pump: 0, pumpLoop: 0, decodeNext: 0, schedule: 0 };
   }
 
   /**
@@ -94,6 +96,7 @@ export class AudioEngine {
 
   /** トラックを (ユーザー操作起点で) 再生する */
   async play(track) {
+    this.stats.play++;
     this.kickContext();
     const gen = ++this._gen;
     // 「次の曲へ」で選ばれた曲なら、先読み済みの取得/デコード結果を使い回す
@@ -107,7 +110,10 @@ export class AudioEngine {
     let decoded = null;
     if (reuse) {
       const entry = reuse.entry ?? await this._ensureNextDecoded(reuse, gen);
-      if (gen !== this._gen) return;
+      if (gen !== this._gen) {
+        entry?.reader?.destroy?.(); // 追い越された: 取得中の接続を切る
+        return;
+      }
       if (entry && !entry.error) {
         decoded = entry; // buffer / reader どちらの形態もそのまま使う
       }
@@ -115,7 +121,11 @@ export class AudioEngine {
     if (!decoded) {
       decoded = await this._decode(track, { forPlayback: true });
     }
-    if (gen !== this._gen) return; // 待っている間に別の再生が始まった
+    if (gen !== this._gen) {
+      // 待っている間に別の再生が始まった: 取得中の接続をリークさせない
+      decoded?.reader?.destroy?.();
+      return;
+    }
 
     await this._ensureContext(decoded.reader?.sampleRate ?? decoded.buffer.sampleRate);
     if (gen !== this._gen) return;
@@ -452,10 +462,13 @@ export class AudioEngine {
     const cur = this.current;
     if (!cur || cur.kind !== 'stream' || gen !== this._gen || cur.pumping) return;
     cur.pumping = true;
+    this.stats.pump++;
     const epoch = cur.epoch;
     try {
       const rate = cur.reader.sampleRate;
-      while (gen === this._gen && this.current === cur && epoch === cur.epoch) {
+      // ループ上限: 想定外の状態でも無限ループにせず、必ずイベントループへ譲歩する
+      for (let guard = 0; guard < 32 && gen === this._gen && this.current === cur && epoch === cur.epoch; guard++) {
+        this.stats.pumpLoop++;
         if (cur.nextSample >= cur.reader.totalSamples) {
           this._armStreamEnd(cur, gen);
           return;
@@ -486,10 +499,14 @@ export class AudioEngine {
           cur.segments.shift();
         }
       }
-      // まだ途中: 少し先でポンプを再実行
+      // まだ途中: ポンプを再実行 (先行分が足りていれば後で、ガード上限で抜けた場合はすぐ)
       if (gen === this._gen && this.current === cur && epoch === cur.epoch) {
+        const played = (this.ctx.currentTime - cur.startTime) * rate;
+        const behind = cur.nextSample < played + STREAM_AHEAD_SEC * rate &&
+          cur.nextSample < cur.reader.totalSamples;
         clearTimeout(cur.pumpTimer);
-        cur.pumpTimer = setTimeout(() => this._pumpStream(gen), (STREAM_AHEAD_SEC / 2) * 1000);
+        cur.pumpTimer = setTimeout(() => this._pumpStream(gen),
+          behind ? 50 : (STREAM_AHEAD_SEC / 2) * 1000);
       }
     } finally {
       cur.pumping = false;
@@ -645,6 +662,7 @@ export class AudioEngine {
 
   /** タイマー起点: 次曲をデコードして現曲の終端に連結する */
   async _decodeNext(gen) {
+    this.stats.decodeNext++;
     const next = this.next;
     if (!next || next.handoff || gen !== this._gen) return;
     if (!next.entry) {
@@ -655,6 +673,7 @@ export class AudioEngine {
   }
 
   _scheduleNextIfReady() {
+    this.stats.schedule++;
     const next = this.next;
     if (!next?.entry || next.entry.error || next.source || !this.current) return;
     const buf = next.entry.firstBuffer ?? next.entry.buffer;
@@ -671,6 +690,7 @@ export class AudioEngine {
 
   /** 現曲の終端に達した: 次曲へ引き継ぐ */
   async _advance(gen) {
+    this.stats.advance++;
     const prev = this.current;
     const next = this.next;
     if (prev) {

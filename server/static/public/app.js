@@ -767,6 +767,14 @@ async function updateDebugPanel() {
       ? `エンジン: stream · セグメント ${c.segments.length} 保持`
       : 'エンジン: buffer (全体デコード)');
   }
+  if (engine) {
+    const s = engine.stats;
+    const counters = `p${s.play} a${s.advance} d${s.decodeNext} s${s.schedule} P${s.pump}/${s.pumpLoop}`;
+    lines.push(`内部: ${counters}`);
+    // フリーズしてもタブタイトルは残るので、診断の手がかりとして常時書き出す
+    const t = state.playing ? `${state.playing.title} — macca` : 'macca';
+    document.title = `${t} [${counters}]`;
+  }
   panel.textContent = lines.join('\n');
 }
 
@@ -778,6 +786,8 @@ function setDebugMode(on) {
   if (on) {
     updateDebugPanel();
     debugTimer = setInterval(updateDebugPanel, 3000);
+  } else {
+    document.title = state.playing ? `${state.playing.title} — macca` : 'macca — ローカル音楽ライブラリ';
   }
   localStorage.setItem('macca-debug', on ? '1' : '0');
 }

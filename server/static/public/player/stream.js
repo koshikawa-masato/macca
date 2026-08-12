@@ -324,7 +324,9 @@ async function createFlacReader(source, decodeAudioData, ctxSampleRate) {
   const SCAN_STEP = 512 * 1024;
 
   async function ensureIndexed(sample) {
+    let guard = 0;
     while (!idx.complete && (idx.frames.length === 0 || idx.expected <= sample)) {
+      if (++guard > 4096) throw new Error('FLAC索引が収束しません'); // 想定外でも無限ループにしない
       const target = Math.min(total, idx.scanPos + SCAN_STEP);
       await source.waitFor(target);
       const limit = source.done && source.received >= total ? total + 20 : source.received;

@@ -1,0 +1,565 @@
+'use strict';
+
+// ---- 状態 -----------------------------------------------------------------
+
+const state = {
+  tracks: [],
+  ffmpeg: false,
+  dir: '',
+  view: 'songs',          // songs | albums | artists
+  search: '',
+  filterArtist: null,
+  filterAlbum: null,      // アルバムキー
+  filterFormats: new Set(),
+  sortKey: null,
+  sortAsc: true,
+  renderLimit: 1000,
+  queue: [],              // 再生キュー (トラック配列)
+  queueIdx: -1,
+  shuffle: false,
+  repeat: 'off',          // off | all | one
+  playing: null,          // 再生中トラック
+  transcoding: false,
+};
+
+const $ = (sel) => document.querySelector(sel);
+const audio = $('#audio');
+const collator = new Intl.Collator('ja');
+
+// ---- ユーティリティ -------------------------------------------------------
+
+function fmtTime(sec) {
+  if (sec == null || !isFinite(sec)) return '–:––';
+  sec = Math.round(sec);
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+  return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+    : `${m}:${String(s).padStart(2, '0')}`;
+}
+
+function fmtSize(bytes) {
+  if (bytes >= 1e9) return (bytes / 1e9).toFixed(1) + ' GB';
+  if (bytes >= 1e6) return (bytes / 1e6).toFixed(1) + ' MB';
+  return Math.round(bytes / 1e3) + ' KB';
+}
+
+function formatLabel(t) {
+  if (t.codec === 'alac') return 'ALAC';
+  if (t.codec === 'aac') return 'AAC';
+  if (t.codec === 'flac') return 'FLAC';
+  if (t.codec === 'mp3') return 'MP3';
+  if (t.codec === 'aiff' || t.codec === 'aifc') return 'AIFF';
+  if (t.codec === 'pcm') return 'WAV';
+  return t.ext.replace('.', '').toUpperCase();
+}
+
+function badgeClass(t) {
+  const l = formatLabel(t).toLowerCase();
+  return ['alac', 'aac', 'flac', 'mp3', 'aiff', 'pcm'].includes(l) ? l : (l === 'wav' ? 'pcm' : '');
+}
+
+function mimeFor(t) {
+  switch (t.codec) {
+    case 'alac': return 'audio/mp4; codecs="alac"';
+    case 'aac': return 'audio/mp4; codecs="mp4a.40.2"';
+    case 'flac': return t.ext === '.m4a' ? 'audio/mp4; codecs="flac"' : 'audio/flac';
+    case 'mp3': return 'audio/mpeg';
+    case 'aiff': case 'aifc': return 'audio/aiff';
+    case 'pcm': return 'audio/wav';
+    default: {
+      const map = { '.mp3': 'audio/mpeg', '.m4a': 'audio/mp4', '.flac': 'audio/flac', '.wav': 'audio/wav', '.ogg': 'audio/ogg', '.oga': 'audio/ogg', '.opus': 'audio/ogg; codecs=opus', '.aif': 'audio/aiff', '.aiff': 'audio/aiff' };
+      return map[t.ext] ?? 'audio/mpeg';
+    }
+  }
+}
+
+function canPlayNatively(t) {
+  return audio.canPlayType(mimeFor(t)) !== '';
+}
+
+function albumKey(t) {
+  return `${t.album ?? '(不明なアルバム)'}\x1f${t.albumArtist ?? t.artist ?? ''}`;
+}
+
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+let toastTimer = null;
+function toast(msg, ms = 3500) {
+  const el = $('#toast');
+  el.textContent = msg;
+  el.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.hidden = true; }, ms);
+}
+
+// ---- フィルタリング -------------------------------------------------------
+
+function visibleTracks() {
+  let list = state.tracks;
+  if (state.filterArtist !== null) {
+    list = list.filter((t) => (t.artist ?? '') === state.filterArtist || (t.albumArtist ?? '') === state.filterArtist);
+  }
+  if (state.filterAlbum !== null) {
+    list = list.filter((t) => albumKey(t) === state.filterAlbum);
+  }
+  if (state.filterFormats.size > 0) {
+    list = list.filter((t) => state.filterFormats.has(formatLabel(t)));
+  }
+  if (state.search) {
+    const q = state.search.toLowerCase();
+    list = list.filter((t) =>
+      t.title.toLowerCase().includes(q) ||
+      (t.artist ?? '').toLowerCase().includes(q) ||
+      (t.album ?? '').toLowerCase().includes(q));
+  }
+  if (state.sortKey) {
+    const k = state.sortKey;
+    const dir = state.sortAsc ? 1 : -1;
+    list = [...list].sort((a, b) => {
+      const va = a[k], vb = b[k];
+      if (va == null && vb == null) return 0;
+      if (va == null) return 1;
+      if (vb == null) return -1;
+      if (typeof va === 'number') return (va - vb) * dir;
+      return collator.compare(String(va), String(vb)) * dir;
+    });
+  } else if (state.filterAlbum !== null) {
+    list = [...list].sort((a, b) => (a.track ?? 9999) - (b.track ?? 9999));
+  }
+  return list;
+}
+
+// ---- 描画: 曲一覧 ---------------------------------------------------------
+
+const SONG_COLUMNS = [
+  ['track', '#'],
+  ['title', 'タイトル'],
+  ['artist', 'アーティスト'],
+  ['album', 'アルバム'],
+  ['duration', '時間'],
+  ['codec', '形式'],
+];
+
+function renderSongs(container) {
+  const list = visibleTracks();
+  const filtered = state.filterArtist !== null || state.filterAlbum !== null;
+
+  let head = '';
+  if (filtered) {
+    const label = state.filterAlbum !== null
+      ? state.filterAlbum.split('\x1f')[0]
+      : state.filterArtist || '(不明なアーティスト)';
+    head = `<div class="view-head"><h2>${esc(label)}</h2>
+      <span class="sub">${list.length} 曲</span>
+      <button class="clear-filter" id="clear-filter">✕ フィルタ解除</button></div>`;
+  }
+
+  const ths = SONG_COLUMNS.map(([key, label]) => {
+    const arrow = state.sortKey === key ? (state.sortAsc ? ' ▲' : ' ▼') : '';
+    return `<th data-sort="${key}">${label}${arrow}</th>`;
+  }).join('');
+
+  const shown = list.slice(0, state.renderLimit);
+  const rows = shown.map((t) => {
+    const playing = state.playing?.id === t.id ? ' playing' : '';
+    const native = canPlayNatively(t) || state.ffmpeg;
+    return `<tr class="song${playing}" data-id="${t.id}">
+      <td class="num">${t.track ?? ''}</td>
+      <td title="${esc(t.path)}">${esc(t.title)}${native ? '' : ' <span class="badge warn" title="このブラウザでは再生できません">再生不可</span>'}</td>
+      <td><span class="link" data-artist="${esc(t.artist ?? '')}">${esc(t.artist ?? '—')}</span></td>
+      <td><span class="link" data-album="${esc(albumKey(t))}">${esc(t.album ?? '—')}</span></td>
+      <td class="dur">${fmtTime(t.duration)}</td>
+      <td class="fmt"><span class="badge ${badgeClass(t)}">${formatLabel(t)}</span></td>
+    </tr>`;
+  }).join('');
+
+  const more = list.length > state.renderLimit
+    ? `<button class="more-btn" id="more-btn">さらに表示 (残り ${list.length - state.renderLimit} 曲)</button>` : '';
+
+  container.innerHTML = `${head}<table class="songs">
+    <thead><tr>${ths}</tr></thead><tbody>${rows}</tbody></table>${more}`;
+
+  container.querySelectorAll('th[data-sort]').forEach((th) => {
+    th.addEventListener('click', () => {
+      const key = th.dataset.sort;
+      if (state.sortKey === key) {
+        if (state.sortAsc) state.sortAsc = false;
+        else { state.sortKey = null; state.sortAsc = true; }
+      } else { state.sortKey = key; state.sortAsc = true; }
+      render();
+    });
+  });
+  container.querySelectorAll('tr.song').forEach((tr) => {
+    tr.addEventListener('dblclick', () => playFromList(tr.dataset.id));
+    tr.addEventListener('click', (e) => {
+      if (e.target.closest('.link')) return;
+      playFromList(tr.dataset.id);
+    });
+  });
+  container.querySelectorAll('[data-artist]').forEach((el) => {
+    el.addEventListener('click', (e) => {
+      e.stopPropagation();
+      state.filterArtist = el.dataset.artist;
+      state.filterAlbum = null;
+      setView('songs');
+    });
+  });
+  container.querySelectorAll('[data-album]').forEach((el) => {
+    el.addEventListener('click', (e) => {
+      e.stopPropagation();
+      state.filterAlbum = el.dataset.album;
+      state.filterArtist = null;
+      setView('songs');
+    });
+  });
+  $('#clear-filter')?.addEventListener('click', () => {
+    state.filterArtist = null;
+    state.filterAlbum = null;
+    render();
+  });
+  $('#more-btn')?.addEventListener('click', () => {
+    state.renderLimit += 2000;
+    render();
+  });
+}
+
+// ---- 描画: アルバム / アーティスト ---------------------------------------
+
+function renderAlbums(container) {
+  const groups = new Map();
+  for (const t of visibleTracks()) {
+    const key = albumKey(t);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(t);
+  }
+  const albums = [...groups.entries()].sort((a, b) => collator.compare(a[0], b[0]));
+
+  const cards = albums.map(([key, ts]) => {
+    const [name, artist] = key.split('\x1f');
+    const artTrack = ts.find((t) => t.hasArt) ?? ts[0];
+    return `<div class="album-card" data-album="${esc(key)}">
+      <div class="cover"><img loading="lazy" src="/api/artwork/${artTrack.id}" alt=""
+        onerror="this.remove()"><span class="cover-fallback">♪</span></div>
+      <div class="name">${esc(name)}</div>
+      <div class="sub">${esc(artist || '—')} · ${ts.length} 曲</div>
+    </div>`;
+  }).join('');
+
+  container.innerHTML = `<div class="view-head"><h2>アルバム</h2>
+    <span class="sub">${albums.length} 枚</span></div>
+    <div class="album-grid">${cards}</div>`;
+
+  container.querySelectorAll('.album-card').forEach((card) => {
+    card.addEventListener('click', () => {
+      state.filterAlbum = card.dataset.album;
+      state.filterArtist = null;
+      setView('songs');
+    });
+  });
+}
+
+function renderArtists(container) {
+  const counts = new Map();
+  for (const t of visibleTracks()) {
+    const name = t.artist ?? '(不明なアーティスト)';
+    counts.set(name, (counts.get(name) ?? 0) + 1);
+  }
+  const artists = [...counts.entries()].sort((a, b) => collator.compare(a[0], b[0]));
+  const rows = artists.map(([name, n]) =>
+    `<div class="artist-row" data-artist="${esc(name === '(不明なアーティスト)' ? '' : name)}">
+      <span>${esc(name)}</span><span class="count">${n} 曲</span></div>`).join('');
+
+  container.innerHTML = `<div class="view-head"><h2>アーティスト</h2>
+    <span class="sub">${artists.length} 組</span></div>
+    <div class="artist-list">${rows}</div>`;
+
+  container.querySelectorAll('.artist-row').forEach((row) => {
+    row.addEventListener('click', () => {
+      state.filterArtist = row.dataset.artist;
+      state.filterAlbum = null;
+      setView('songs');
+    });
+  });
+}
+
+function render() {
+  const container = $('#content');
+  if (state.view === 'albums') renderAlbums(container);
+  else if (state.view === 'artists') renderArtists(container);
+  else renderSongs(container);
+}
+
+function setView(view) {
+  state.view = view;
+  state.renderLimit = 1000;
+  document.querySelectorAll('.nav-item').forEach((b) =>
+    b.classList.toggle('active', b.dataset.view === view));
+  if (location.hash !== `#${view}`) history.replaceState(null, '', `#${view}`);
+  render();
+  $('#content').scrollTop = 0;
+}
+
+// ---- フォーマットフィルタ / 統計 ------------------------------------------
+
+function renderFormatChips() {
+  const formats = new Map();
+  for (const t of state.tracks) {
+    const l = formatLabel(t);
+    formats.set(l, (formats.get(l) ?? 0) + 1);
+  }
+  const el = $('#fmt-filters');
+  el.innerHTML = [...formats.entries()].sort((a, b) => b[1] - a[1]).map(([l, n]) =>
+    `<button class="fmt-chip${state.filterFormats.has(l) ? ' active' : ''}" data-fmt="${l}">${l} <small>${n}</small></button>`).join('');
+  el.querySelectorAll('.fmt-chip').forEach((chip) => {
+    chip.addEventListener('click', () => {
+      const f = chip.dataset.fmt;
+      if (state.filterFormats.has(f)) state.filterFormats.delete(f);
+      else state.filterFormats.add(f);
+      renderFormatChips();
+      render();
+    });
+  });
+}
+
+function renderStats() {
+  const totalDur = state.tracks.reduce((s, t) => s + (t.duration ?? 0), 0);
+  const totalSize = state.tracks.reduce((s, t) => s + t.size, 0);
+  $('#stats').textContent =
+    `${state.tracks.length.toLocaleString()} 曲 · ${(totalDur / 3600).toFixed(1)} 時間 · ${fmtSize(totalSize)}`;
+  $('#lib-info').innerHTML =
+    `${esc(state.dir)}<br>` +
+    (state.ffmpeg
+      ? 'ffmpeg: あり（全形式再生可）'
+      : '<span class="warn">ffmpeg なし: Chrome 等では ALAC / AIFF が再生できません（Safari 推奨）</span>');
+}
+
+// ---- 再生 -----------------------------------------------------------------
+
+function playFromList(id) {
+  const list = visibleTracks();
+  const idx = list.findIndex((t) => t.id === id);
+  if (idx === -1) return;
+  state.queue = list;
+  state.queueIdx = idx;
+  playTrack(list[idx]);
+}
+
+function playTrack(t) {
+  state.playing = t;
+  const native = canPlayNatively(t);
+  state.transcoding = !native && state.ffmpeg;
+
+  if (!native && !state.ffmpeg) {
+    toast(`${formatLabel(t)} はこのブラウザでは再生できません。Safari を使うか、サーバ側に ffmpeg をインストールしてください。`);
+  }
+
+  audio.src = `/api/stream/${t.id}${state.transcoding ? '?transcode=1' : ''}`;
+  audio.play().catch((err) => {
+    if (err.name !== 'AbortError') toast(`再生エラー: ${t.title}`);
+  });
+
+  $('#player').classList.remove('hidden');
+  $('#np-title').textContent = t.title;
+  $('#np-artist').textContent = [t.artist, t.album].filter(Boolean).join(' — ');
+
+  const badge = $('#np-badge');
+  badge.hidden = false;
+  badge.className = `badge ${badgeClass(t)}`;
+  badge.textContent = formatLabel(t) + (state.transcoding ? ' → WAV' : '');
+
+  const art = $('#np-art');
+  if (t.hasArt || true) { // フォルダアートの可能性もあるため常に試す
+    art.src = `/api/artwork/${t.id}`;
+    art.hidden = false;
+    $('#np-art-placeholder').style.display = 'none';
+    art.onerror = () => {
+      art.hidden = true;
+      $('#np-art-placeholder').style.display = 'flex';
+    };
+  }
+
+  $('#seekbar').disabled = state.transcoding; // 変換ストリームはシーク不可
+  updatePlayButton();
+  updateMediaSession(t);
+  document.querySelectorAll('tr.song').forEach((tr) =>
+    tr.classList.toggle('playing', tr.dataset.id === t.id));
+  document.title = `${t.title} — macca`;
+}
+
+function nextIdx(delta) {
+  const n = state.queue.length;
+  if (n === 0) return -1;
+  if (state.shuffle && delta > 0) return Math.floor(Math.random() * n);
+  return state.queueIdx + delta;
+}
+
+function playNext(auto = false) {
+  let idx = nextIdx(1);
+  if (idx >= state.queue.length) {
+    if (state.repeat === 'all') idx = 0;
+    else if (auto) return; // 末尾で停止
+    else idx = state.queue.length - 1;
+  }
+  if (idx >= 0 && idx < state.queue.length) {
+    state.queueIdx = idx;
+    playTrack(state.queue[idx]);
+  }
+}
+
+function playPrev() {
+  if (audio.currentTime > 3) { audio.currentTime = 0; return; }
+  let idx = state.queueIdx - 1;
+  if (idx < 0) idx = state.repeat === 'all' ? state.queue.length - 1 : 0;
+  state.queueIdx = idx;
+  if (state.queue[idx]) playTrack(state.queue[idx]);
+}
+
+function togglePlay() {
+  if (!audio.src) return;
+  if (audio.paused) audio.play().catch(() => {});
+  else audio.pause();
+}
+
+function updatePlayButton() {
+  $('#btn-play').textContent = audio.paused ? '▶' : '⏸';
+}
+
+function updateMediaSession(t) {
+  if (!('mediaSession' in navigator)) return;
+  navigator.mediaSession.metadata = new MediaMetadata({
+    title: t.title,
+    artist: t.artist ?? '',
+    album: t.album ?? '',
+    artwork: [{ src: `/api/artwork/${t.id}`, sizes: '512x512' }],
+  });
+  navigator.mediaSession.setActionHandler('play', togglePlay);
+  navigator.mediaSession.setActionHandler('pause', togglePlay);
+  navigator.mediaSession.setActionHandler('previoustrack', playPrev);
+  navigator.mediaSession.setActionHandler('nexttrack', () => playNext());
+}
+
+// ---- プレーヤ UI イベント -------------------------------------------------
+
+audio.addEventListener('timeupdate', () => {
+  const dur = isFinite(audio.duration) ? audio.duration : state.playing?.duration;
+  $('#time-cur').textContent = fmtTime(audio.currentTime);
+  $('#time-total').textContent = fmtTime(dur);
+  if (dur > 0 && !seekDragging) {
+    $('#seekbar').value = Math.round((audio.currentTime / dur) * 1000);
+  }
+});
+audio.addEventListener('ended', () => {
+  if (state.repeat === 'one') {
+    audio.currentTime = 0;
+    audio.play().catch(() => {});
+  } else {
+    playNext(true);
+  }
+});
+audio.addEventListener('play', updatePlayButton);
+audio.addEventListener('pause', updatePlayButton);
+audio.addEventListener('error', () => {
+  if (!audio.src) return;
+  const t = state.playing;
+  if (t && !canPlayNatively(t) && !state.ffmpeg) return; // 既に警告済み
+  if (t) toast(`再生できませんでした: ${t.title}`);
+});
+
+let seekDragging = false;
+const seekbar = $('#seekbar');
+seekbar.addEventListener('input', () => { seekDragging = true; });
+seekbar.addEventListener('change', () => {
+  const dur = isFinite(audio.duration) ? audio.duration : state.playing?.duration;
+  if (dur > 0) audio.currentTime = (seekbar.value / 1000) * dur;
+  seekDragging = false;
+});
+
+$('#btn-play').addEventListener('click', togglePlay);
+$('#btn-next').addEventListener('click', () => playNext());
+$('#btn-prev').addEventListener('click', playPrev);
+$('#btn-shuffle').addEventListener('click', function () {
+  state.shuffle = !state.shuffle;
+  this.classList.toggle('on', state.shuffle);
+});
+$('#btn-repeat').addEventListener('click', function () {
+  state.repeat = state.repeat === 'off' ? 'all' : state.repeat === 'all' ? 'one' : 'off';
+  this.classList.toggle('on', state.repeat !== 'off');
+  this.textContent = state.repeat === 'one' ? '🔂' : '🔁';
+});
+
+const volbar = $('#volbar');
+volbar.value = localStorage.getItem('macca-volume') ?? 100;
+audio.volume = volbar.value / 100;
+volbar.addEventListener('input', () => {
+  audio.volume = volbar.value / 100;
+  localStorage.setItem('macca-volume', volbar.value);
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'INPUT') return;
+  if (e.code === 'Space') { e.preventDefault(); togglePlay(); }
+  else if (e.key === 'ArrowRight' && e.shiftKey) playNext();
+  else if (e.key === 'ArrowLeft' && e.shiftKey) playPrev();
+});
+
+// ---- 検索 / ナビゲーション ------------------------------------------------
+
+let searchTimer = null;
+$('#search').addEventListener('input', (e) => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => {
+    state.search = e.target.value.trim();
+    state.renderLimit = 1000;
+    render();
+  }, 150);
+});
+
+document.querySelectorAll('.nav-item').forEach((b) => {
+  b.addEventListener('click', () => {
+    state.filterArtist = null;
+    state.filterAlbum = null;
+    setView(b.dataset.view);
+  });
+});
+
+$('#rescan').addEventListener('click', async () => {
+  $('#rescan').disabled = true;
+  $('#rescan').textContent = 'スキャン中…';
+  try {
+    const res = await fetch('/api/rescan', { method: 'POST' });
+    applyLibrary(await res.json());
+    toast('再スキャン完了');
+  } catch {
+    toast('再スキャンに失敗しました');
+  } finally {
+    $('#rescan').disabled = false;
+    $('#rescan').textContent = '再スキャン';
+  }
+});
+
+// ---- 初期化 ---------------------------------------------------------------
+
+function applyLibrary(data) {
+  state.tracks = data.tracks;
+  state.ffmpeg = data.ffmpeg;
+  state.dir = data.dir;
+  renderStats();
+  renderFormatChips();
+  render();
+  if (data.errors > 0) toast(`${data.errors} 件のファイルが読み取れませんでした`);
+}
+
+(async function init() {
+  const hashView = location.hash.replace('#', '');
+  if (['songs', 'albums', 'artists'].includes(hashView)) state.view = hashView;
+  try {
+    const res = await fetch('/api/library');
+    applyLibrary(await res.json());
+    if (state.view !== 'songs') setView(state.view);
+  } catch {
+    $('#content').innerHTML = '<div class="loading">ライブラリの読み込みに失敗しました。サーバが起動しているか確認してください。</div>';
+  }
+})();

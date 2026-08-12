@@ -19,6 +19,10 @@ const ENGINE_EXTS = new Set([
 const GAIN_CACHE_KEY = 'macca-track-gains';
 const GAIN_CACHE_MAX = 5000;
 
+// これより長いトラックは全体デコードせず <audio> ストリーミングに任せる
+// (全体デコードは開始が遅くメモリも食う: 44.1kHz ステレオで約 21MB/分)
+const MAX_ENGINE_DURATION = 15 * 60;
+
 export class AudioEngine {
   constructor({ wasmUrl = '/player/alac.wasm', streamUrl = (t) => `/api/stream/${t.id}` } = {}) {
     this.wasmUrl = wasmUrl;
@@ -36,6 +40,7 @@ export class AudioEngine {
     this.nextProvider = null;        // () => track | null
     this.ontrackstart = null;        // (track, {auto}) => void
     this.onqueueend = null;          // () => void
+    this.onhandoff = null;           // (track) => void  エンジン非対応の次曲を委譲
 
     this._gen = 0;
     this._alacPromise = null;
@@ -43,9 +48,11 @@ export class AudioEngine {
     this._gainsSaveTimer = null;
   }
 
-  /** このエンジンでデコード・再生できる形式か */
+  /** このエンジンでデコード・再生できる形式・長さか */
   canPlay(track) {
-    return typeof AudioContext !== 'undefined' && ENGINE_EXTS.has(track.ext);
+    if (typeof AudioContext === 'undefined' || !ENGINE_EXTS.has(track.ext)) return false;
+    if (track.duration && track.duration > MAX_ENGINE_DURATION) return false; // 長尺は <audio> へ
+    return true;
   }
 
   get playingTrack() { return this.current?.track ?? null; }
@@ -299,6 +306,12 @@ export class AudioEngine {
     const track = this.nextProvider?.() ?? null;
     if (!track) { this.next = null; return; }
 
+    // エンジンで扱えない曲 (長尺など) は終端でアプリ側に委譲する
+    if (!this.canPlay(track)) {
+      this.next = { track, handoff: true };
+      return;
+    }
+
     // リピート 1 曲などで現曲と同じトラックならデコード結果を使い回す
     const promise = (track === this.current?.track)
       ? Promise.resolve({ buffer: this.current.buffer, trackGain: this.current.trackGain })
@@ -334,6 +347,12 @@ export class AudioEngine {
       this.current = null;
     }
     if (!next) { this.onqueueend?.(); return; }
+
+    if (next.handoff) {
+      this.next = null;
+      this.onhandoff?.(next.track);
+      return;
+    }
 
     const entry = next.entry ?? await next.promise;
     if (gen !== this._gen) return;

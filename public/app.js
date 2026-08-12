@@ -537,6 +537,12 @@ if (engine) {
     updateNowPlayingUI(t);
   };
   engine.onqueueend = () => updatePlayButton();
+  // 次曲がエンジン非対応 (15 分超の長尺など) の場合は <audio> 再生に引き継ぐ
+  engine.onhandoff = (t) => {
+    const idx = state.queue.indexOf(t);
+    if (idx !== -1) state.queueIdx = idx;
+    playTrack(t);
+  };
 
   setInterval(() => {
     if (state.mode !== 'engine' || !engine.playingTrack) return;

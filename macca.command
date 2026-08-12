@@ -6,7 +6,7 @@
 cd "$(dirname "$0")" || exit 1
 
 if [ -x "./macca" ]; then
-  exec ./macca --open "$@"
+  exec ./macca --open --exit-on-close "$@"
 fi
 
 if ! command -v node >/dev/null 2>&1; then

@@ -5,7 +5,7 @@ rem ダブルクリックするとサーバが起動し、ブラウザが自動�
 rem このウィンドウを閉じると macca は終了します。
 cd /d "%~dp0"
 if exist "%~dp0macca.exe" (
-  "%~dp0macca.exe" --open %*
+  "%~dp0macca.exe" --open --exit-on-close %*
   pause
   exit /b %errorlevel%
 )

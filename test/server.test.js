@@ -45,6 +45,14 @@ after(async () => {
   await rm(deviceDir, { recursive: true, force: true });
 });
 
+test('GET / が index.html を返す', async () => {
+  const res = await fetch(`${base}/`);
+  assert.equal(res.status, 200);
+  assert.match(res.headers.get('content-type'), /text\/html/);
+  const html = await res.text();
+  assert.ok(html.includes('macca'), 'アプリのHTMLが返る');
+});
+
 test('GET /api/library がライブラリを返す', async () => {
   const res = await fetch(`${base}/api/library`);
   assert.equal(res.status, 200);

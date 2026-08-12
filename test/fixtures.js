@@ -66,8 +66,12 @@ function id3Frame(id, body) {
 
 function id3TextFrame(id, text, encoding = 3) {
   let payload;
-  if (encoding === 1) {
+  if (Buffer.isBuffer(text)) {
+    payload = text; // 生バイト列 (壊れタグ・Shift_JIS 等の再現用)
+  } else if (encoding === 1) {
     payload = Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(text, 'utf16le')]);
+  } else if (encoding === 2) {
+    payload = Buffer.from(text, 'utf16le').swap16(); // UTF-16BE (BOM なし)
   } else if (encoding === 0) {
     payload = Buffer.from(text, 'utf8'); // 「latin1 と偽った UTF-8」の壊れタグを再現
   } else {
@@ -76,8 +80,8 @@ function id3TextFrame(id, text, encoding = 3) {
   return id3Frame(id, Buffer.concat([Buffer.from([encoding]), payload]));
 }
 
-export function buildId3(tags, art = null) {
-  const frames = [];
+export function buildId3(tags, art = null, extraFrames = []) {
+  const frames = [...extraFrames];
   if (tags.title) frames.push(id3TextFrame('TIT2', tags.title, 1));   // UTF-16
   if (tags.artist) frames.push(id3TextFrame('TPE1', tags.artist, 0)); // 偽 latin1
   if (tags.album) frames.push(id3TextFrame('TALB', tags.album, 3));   // UTF-8
@@ -103,8 +107,8 @@ export function buildId3(tags, art = null) {
   return Buffer.concat([header, body]);
 }
 
-export function buildMp3(tags, art = null, frames = 20) {
-  const tag = buildId3(tags, art);
+export function buildMp3(tags, art = null, frames = 20, extraFrames = []) {
+  const tag = buildId3(tags, art, extraFrames);
   // MPEG1 Layer3 128kbps 44.1kHz CBR フレーム
   const frameLen = Math.floor((144 * 128000) / 44100);
   const audio = Buffer.alloc(frameLen * frames);
@@ -115,6 +119,93 @@ export function buildMp3(tags, art = null, frames = 20) {
     audio[i * frameLen + 3] = 0x00;
   }
   return Buffer.concat([tag, audio]);
+}
+
+/** Xing ヘッダ付き VBR MP3 (実時間 = frames * 1152 / 44100) */
+export function buildVbrMp3(tags, xingFrames = 1000) {
+  const tag = buildId3(tags);
+  const frameLen = Math.floor((144 * 128000) / 44100);
+  const frame = Buffer.alloc(frameLen);
+  frame[0] = 0xff;
+  frame[1] = 0xfb; // MPEG1 Layer3
+  frame[2] = 0x90; // 128kbps, 44.1kHz
+  frame[3] = 0x00; // ステレオ → サイド情報 32 バイト
+  const xingPos = 4 + 32;
+  frame.write('Xing', xingPos, 'ascii');
+  frame.writeUInt32BE(0x01, xingPos + 4);       // FRAMES フラグ
+  frame.writeUInt32BE(xingFrames, xingPos + 8); // フレーム数
+  return Buffer.concat([tag, frame]);
+}
+
+/** MPEG2 Layer3 (22.05kHz 144kbps) の CBR MP3 */
+export function buildMpeg2Mp3(tags, frames = 40) {
+  const tag = buildId3(tags);
+  const frameLen = Math.floor((72 * 144000) / 22050);
+  const audio = Buffer.alloc(frameLen * frames);
+  for (let i = 0; i < frames; i++) {
+    audio[i * frameLen] = 0xff;
+    audio[i * frameLen + 1] = 0xf3; // MPEG2, Layer3
+    audio[i * frameLen + 2] = 0xd0; // bitrateIdx=13 (144kbps), srIdx=0 (22050)
+    audio[i * frameLen + 3] = 0x00;
+  }
+  return Buffer.concat([tag, audio]);
+}
+
+/** ID3v2.2 タグ (3 文字 ID / 6 バイトフレームヘッダ) 付き MP3 */
+export function buildId3v22Mp3(tags) {
+  const frames = [];
+  const frame22 = (id, text) => {
+    const payload = Buffer.concat([Buffer.from([3]), Buffer.from(text, 'utf8')]);
+    const h = Buffer.alloc(6);
+    h.write(id, 0, 'ascii');
+    h[3] = (payload.length >> 16) & 0xff;
+    h[4] = (payload.length >> 8) & 0xff;
+    h[5] = payload.length & 0xff;
+    return Buffer.concat([h, payload]);
+  };
+  if (tags.title) frames.push(frame22('TT2', tags.title));
+  if (tags.artist) frames.push(frame22('TP1', tags.artist));
+  if (tags.album) frames.push(frame22('TAL', tags.album));
+  const body = Buffer.concat(frames);
+  const header = Buffer.from([
+    0x49, 0x44, 0x33, 2, 0, 0,
+    (body.length >> 21) & 0x7f, (body.length >> 14) & 0x7f,
+    (body.length >> 7) & 0x7f, body.length & 0x7f,
+  ]);
+  const frameLen = Math.floor((144 * 128000) / 44100);
+  const audio = Buffer.alloc(frameLen * 10);
+  for (let i = 0; i < 10; i++) {
+    audio[i * frameLen] = 0xff;
+    audio[i * frameLen + 1] = 0xfb;
+    audio[i * frameLen + 2] = 0x90;
+  }
+  return Buffer.concat([header, body, audio]);
+}
+
+/** タグ全体に unsynchronisation (0xFF → 0xFF 0x00) をかけた ID3v2.3 MP3 */
+export function buildUnsyncMp3(tags, art = null) {
+  const normal = buildId3(tags, art);
+  const body = normal.subarray(10);
+  // 0xFF の後に 0x00 を挿入
+  const parts = [];
+  for (let i = 0; i < body.length; i++) {
+    parts.push(body.subarray(i, i + 1));
+    if (body[i] === 0xff) parts.push(Buffer.from([0x00]));
+  }
+  const unsynced = Buffer.concat(parts);
+  const size = unsynced.length;
+  const header = Buffer.from([
+    0x49, 0x44, 0x33, 3, 0, 0x80, // unsync フラグ
+    (size >> 21) & 0x7f, (size >> 14) & 0x7f, (size >> 7) & 0x7f, size & 0x7f,
+  ]);
+  const frameLen = Math.floor((144 * 128000) / 44100);
+  const audio = Buffer.alloc(frameLen * 10);
+  for (let i = 0; i < 10; i++) {
+    audio[i * frameLen] = 0xff;
+    audio[i * frameLen + 1] = 0xfb;
+    audio[i * frameLen + 2] = 0x90;
+  }
+  return Buffer.concat([header, unsynced, audio]);
 }
 
 // ---- AIFF -----------------------------------------------------------------
@@ -278,6 +369,10 @@ export function buildFlac(tags, art = null, { sampleRate = 44100, totalSamples =
 
 // ---- フィクスチャ一式の書き出し -------------------------------------------
 
+// 「テスト曲」の Shift_JIS バイト列 (encoding=0 と偽って格納する)
+export const SJIS_TITLE = 'テスト曲';
+const SJIS_TITLE_BYTES = Buffer.from([0x83, 0x65, 0x83, 0x58, 0x83, 0x67, 0x8b, 0xc8]);
+
 export async function writeFixtures(dir) {
   await mkdir(path.join(dir, 'アルバムA'), { recursive: true });
   await writeFile(path.join(dir, 'アルバムA', '01 テスト曲.mp3'),
@@ -292,4 +387,41 @@ export async function writeFixtures(dir) {
     buildWav({ title: 'PCM散歩', artist: 'ウェーブ', album: 'WAV集' }));
   await writeFile(path.join(dir, 'NoTag Artist - 名無しの曲.mp3'),
     buildMp3({}, null, 10));
+}
+
+/** パーサの互換検証用: 壊れタグ・特殊エンコーディング・VBR などの意地悪ケース */
+export async function writeParityFixtures(dir) {
+  await mkdir(dir, { recursive: true });
+  // Latin-1 と偽った Shift_JIS タグ
+  await writeFile(path.join(dir, 'sjis.mp3'), (() => {
+    const tag = id3Frame('TIT2', Buffer.concat([Buffer.from([0]), SJIS_TITLE_BYTES]));
+    const body = tag;
+    const header = Buffer.from([0x49, 0x44, 0x33, 3, 0, 0,
+      (body.length >> 21) & 0x7f, (body.length >> 14) & 0x7f,
+      (body.length >> 7) & 0x7f, body.length & 0x7f]);
+    const frameLen = Math.floor((144 * 128000) / 44100);
+    const audio = Buffer.alloc(frameLen * 10);
+    for (let i = 0; i < 10; i++) {
+      audio[i * frameLen] = 0xff;
+      audio[i * frameLen + 1] = 0xfb;
+      audio[i * frameLen + 2] = 0x90;
+    }
+    return Buffer.concat([header, body, audio]);
+  })());
+  // UTF-16BE (encoding=2)
+  await writeFile(path.join(dir, 'utf16be.mp3'),
+    buildMp3({ title: null }, null, 10, [id3TextFrame('TIT2', '大文字エンディアン', 2)]));
+  // ジャンル番号参照 (括弧付き / 裸)
+  await writeFile(path.join(dir, 'genre-paren.mp3'),
+    buildMp3({ title: 'ジャンル括弧', genre: '(13)' }, null, 10));
+  await writeFile(path.join(dir, 'genre-bare.mp3'),
+    buildMp3({ title: 'ジャンル裸', genre: '13' }, null, 10));
+  // VBR (Xing) と MPEG2
+  await writeFile(path.join(dir, 'vbr.mp3'), buildVbrMp3({ title: 'VBR曲' }, 2000));
+  await writeFile(path.join(dir, 'mpeg2.mp3'), buildMpeg2Mp3({ title: 'MPEG2曲' }));
+  // ID3v2.2 と unsync
+  await writeFile(path.join(dir, 'v22.mp3'),
+    buildId3v22Mp3({ title: '古いタグ', artist: '旧世代', album: 'V22集' }));
+  await writeFile(path.join(dir, 'unsync.mp3'),
+    buildUnsyncMp3({ title: '非同期回避', artist: 'アンシンク' }, TINY_PNG));
 }

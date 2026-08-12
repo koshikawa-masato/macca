@@ -102,21 +102,24 @@ type artInfo struct {
 	DataBase64 string `json:"dataBase64,omitempty"`
 }
 
+// tags / metadataResult はスキャンキャッシュに JSON で保存される。
+// Node 版 (~/.cache/macca) と相互運用できるよう、キー名を小文字に揃え
+// 欠落値はキーごと省略する (Node は存在するタグだけを書く)。
 type tags struct {
-	Title       string
-	Artist      string
-	AlbumArtist string
-	Album       string
-	Genre       string
-	Year        *int
-	Track       *int
+	Title       string `json:"title,omitempty"`
+	Artist      string `json:"artist,omitempty"`
+	AlbumArtist string `json:"albumArtist,omitempty"`
+	Album       string `json:"album,omitempty"`
+	Genre       string `json:"genre,omitempty"`
+	Year        *int   `json:"year,omitempty"`
+	Track       *int   `json:"track,omitempty"`
 }
 
 type metadataResult struct {
-	Tags     tags
-	Duration *float64
-	Codec    string
-	Art      *artInfo
+	Tags     tags     `json:"tags"`
+	Duration *float64 `json:"duration,omitempty"`
+	Codec    string   `json:"codec,omitempty"`
+	Art      *artInfo `json:"art,omitempty"`
 }
 
 type source struct {
@@ -153,26 +156,32 @@ type libraryResponse struct {
 }
 
 type appState struct {
-	mu        sync.RWMutex
-	rootDir   string
-	publicDir string
-	sources   map[string]*source
-	tracks    []track
-	byID      map[string]track
-	scanning  bool
-	scannedAt string
-	ffmpeg    bool
-	folderArt map[string]string
+	mu          sync.RWMutex
+	rootDir     string
+	publicDir   string
+	sources     map[string]*source
+	tracks      []track
+	byID        map[string]track
+	scanning    bool
+	scannedAt   string
+	ffmpeg      bool
+	folderArt   map[string]string
+	exitOnClose bool
+
+	presenceMu    sync.Mutex
+	presenceCount int
+	presenceTimer *time.Timer
 }
 
 type options struct {
-	dir       string
-	port      string
-	host      string
-	cache     bool
-	open      bool
-	publicDir string
-	sources   []string
+	dir         string
+	port        string
+	host        string
+	cache       bool
+	open        bool
+	exitOnClose bool
+	publicDir   string
+	sources     []string
 }
 
 type stringList []string
@@ -209,6 +218,15 @@ func main() {
 	}
 	server := &http.Server{Handler: state.routes(opts.cache)}
 	ln, err := net.Listen("tcp", net.JoinHostPort(opts.host, opts.port))
+	// ランチャー起動 (--exit-on-close) では重複起動を許す:
+	// ポートが使用中なら次のポートへずらして新しいインスタンスを立てる
+	if err != nil && opts.exitOnClose {
+		if base, perr := strconv.Atoi(opts.port); perr == nil {
+			for i := 1; i <= 20 && err != nil; i++ {
+				ln, err = net.Listen("tcp", net.JoinHostPort(opts.host, strconv.Itoa(base+i)))
+			}
+		}
+	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -240,7 +258,7 @@ func main() {
 func parseArgs(args []string) options {
 	opts := options{port: "8323", host: "127.0.0.1", cache: true}
 	usage := func() {
-		fmt.Println("使い方: macca [音楽ディレクトリ] [--port 8323] [--host 127.0.0.1] [--source <dir>]... [--no-cache] [--open] [--public <dir>] [--help]")
+		fmt.Println("使い方: macca [音楽ディレクトリ] [--port 8323] [--host 127.0.0.1] [--source <dir>]... [--no-cache] [--open] [--exit-on-close] [--public <dir>] [--help]")
 		fmt.Println("ディレクトリを省略すると iTunes / ミュージックのライブラリを自動検出します。")
 	}
 	for i := 0; i < len(args); i++ {
@@ -270,6 +288,8 @@ func parseArgs(args []string) options {
 			opts.cache = false
 		case "--open":
 			opts.open = true
+		case "--exit-on-close":
+			opts.exitOnClose = true
 		case "--help", "-h":
 			usage()
 			os.Exit(0)
@@ -288,12 +308,13 @@ func newState(opts options) (*appState, error) {
 		return nil, err
 	}
 	state := &appState{
-		rootDir:   root,
-		publicDir: resolvePublicDir(opts.publicDir),
-		sources:   map[string]*source{},
-		byID:      map[string]track{},
-		ffmpeg:    hasCommand("ffmpeg"),
-		folderArt: map[string]string{},
+		rootDir:     root,
+		publicDir:   resolvePublicDir(opts.publicDir),
+		sources:     map[string]*source{},
+		byID:        map[string]track{},
+		ffmpeg:      hasCommand("ffmpeg"),
+		folderArt:   map[string]string{},
+		exitOnClose: opts.exitOnClose,
 	}
 	primary := &source{ID: sourceID(root), Dir: root, Label: "ライブラリ", Removable: false}
 	state.sources[primary.ID] = primary
@@ -342,20 +363,18 @@ func resolvePublicDir(flagValue string) string {
 func (s *appState) routes(useCache bool) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		p, err := filepath.Localize(strings.TrimPrefix(r.URL.EscapedPath(), "/"))
-		if err != nil {
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
-			return
-		}
-		decodedPath, err := filepath.Localize(strings.TrimPrefix(r.URL.Path, "/"))
-		if err == nil {
-			p = decodedPath
-		}
-		if r.URL.Path == "/" {
-			p = "index.html"
-		}
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			s.serveAPI(w, r, useCache)
+			return
+		}
+		rel := strings.TrimPrefix(r.URL.Path, "/")
+		if rel == "" {
+			rel = "index.html"
+		}
+		// Localize は ".." を含む非ローカルパスを拒否する (パストラバーサル対策)
+		p, err := filepath.Localize(rel)
+		if err != nil {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 			return
 		}
 		s.serveStatic(w, r, filepath.Clean(p))
@@ -371,6 +390,8 @@ func (s *appState) serveAPI(w http.ResponseWriter, r *http.Request, useCache boo
 	case p == "/api/rescan" && r.Method == http.MethodPost:
 		_ = s.rescan(useCache)
 		s.serveLibrary(w)
+	case p == "/api/presence" && r.Method == http.MethodGet:
+		s.servePresence(w, r)
 	case p == "/api/devices" && r.Method == http.MethodGet:
 		s.serveDevices(w)
 	case p == "/api/source" && r.Method == http.MethodPost:
@@ -604,7 +625,10 @@ func scanLibrary(rootDir string, useCache bool) ([]track, []scanError) {
 					}{err: scanError{Path: rel, Error: err.Error()}}
 					continue
 				}
-				mtimeMs := float64(st.ModTime().UnixNano()) / 1e6
+				// Node の stats.mtimeMs (sec*1000 + nsec/1e6 の double) とビット一致させる。
+				// UnixNano() は float64 の仮数を超えて丸めが入るため使わない
+				mt := st.ModTime()
+				mtimeMs := float64(mt.Unix())*1000 + float64(mt.Nanosecond())/1e6
 				var meta metadataResult
 				if c, ok := cache[rel]; ok && c.MtimeMs == mtimeMs && c.Size == st.Size() {
 					meta = c.Meta
@@ -680,9 +704,7 @@ func cacheFileFor(rootDir string) string {
 }
 
 func cacheDir() string {
-	if d, err := os.UserCacheDir(); err == nil {
-		return filepath.Join(d, "macca")
-	}
+	// Node 版と同じ ~/.cache/macca に固定する (OS 慣習より相互運用を優先)
 	if home, err := os.UserHomeDir(); err == nil {
 		return filepath.Join(home, ".cache", "macca")
 	}
@@ -762,119 +784,327 @@ func parseMP3(f *os.File, fileSize int64) metadataResult {
 	return r
 }
 
+var mp3BitratesV1L3 = []int{0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320}
+var mp3BitratesV2L3 = []int{0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160}
+
+// MP3 の再生時間推定 (lib/mp3.js と同一)。
+// Xing/Info ヘッダ (VBR) があればフレーム数から正確に、なければ CBR とみなす。
 func estimateMP3Duration(buf []byte, audioSize int64) float64 {
 	for i := 0; i+4 <= len(buf); i++ {
 		if buf[i] != 0xff || buf[i+1]&0xe0 != 0xe0 {
 			continue
 		}
-		versionBits := (buf[i+1] >> 3) & 0x03
-		layerBits := (buf[i+1] >> 1) & 0x03
+		version := (buf[i+1] >> 3) & 0x03 // 3=MPEG1, 2=MPEG2, 0=MPEG2.5
+		layer := (buf[i+1] >> 1) & 0x03   // 1=Layer3
 		bitrateIdx := (buf[i+2] >> 4) & 0x0f
-		sampleIdx := (buf[i+2] >> 2) & 0x03
-		if versionBits == 1 || layerBits != 1 || bitrateIdx == 0 || bitrateIdx == 15 || sampleIdx == 3 {
+		srIdx := (buf[i+2] >> 2) & 0x03
+		if version == 1 || layer != 1 || bitrateIdx == 0 || bitrateIdx == 15 || srIdx == 3 {
 			continue
 		}
-		bitrates := []int{0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320}
-		rates := []int{44100, 48000, 32000}
-		sampleRate := rates[sampleIdx]
-		if versionBits == 2 {
-			sampleRate /= 2
-		} else if versionBits == 0 {
-			sampleRate /= 4
+		var sampleRate int
+		switch version {
+		case 3:
+			sampleRate = []int{44100, 48000, 32000}[srIdx]
+		case 2:
+			sampleRate = []int{22050, 24000, 16000}[srIdx]
+		case 0:
+			sampleRate = []int{11025, 12000, 8000}[srIdx]
 		}
-		bitrate := bitrates[bitrateIdx] * 1000
+		var bitrate int
+		samplesPerFrame := 576
+		if version == 3 {
+			bitrate = mp3BitratesV1L3[bitrateIdx] * 1000
+			samplesPerFrame = 1152
+		} else {
+			bitrate = mp3BitratesV2L3[bitrateIdx] * 1000
+		}
+
+		// Xing/Info ヘッダ (サイド情報の直後に置かれる)
+		channelMode := (buf[i+3] >> 6) & 0x03
+		sideInfo := 17
+		if version == 3 {
+			if channelMode != 3 {
+				sideInfo = 32
+			}
+		} else {
+			if channelMode == 3 {
+				sideInfo = 9
+			}
+		}
+		xingPos := i + 4 + sideInfo
+		if xingPos+8 <= len(buf) {
+			tag := string(buf[xingPos : xingPos+4])
+			if tag == "Xing" || tag == "Info" {
+				flags := binary.BigEndian.Uint32(buf[xingPos+4 : xingPos+8])
+				if flags&0x01 != 0 && xingPos+12 <= len(buf) {
+					frames := binary.BigEndian.Uint32(buf[xingPos+8 : xingPos+12])
+					return float64(frames) * float64(samplesPerFrame) / float64(sampleRate)
+				}
+			}
+		}
+		// CBR とみなす
 		if bitrate > 0 {
 			return float64(audioSize*8) / float64(bitrate)
 		}
+		return 0
 	}
 	return 0
 }
 
-func parseID3(buf []byte, absoluteStart int64) metadataResult {
+// lib/id3.js の TEXT_FRAMES と同一 (v2.3/2.4 の 4 文字 ID + v2.2 の 3 文字 ID)
+var id3TextFrames = map[string]string{
+	"TIT2": "title", "TPE1": "artist", "TPE2": "albumArtist", "TALB": "album",
+	"TCON": "genre", "TRCK": "track", "TYER": "year", "TDRC": "year",
+	"TT2": "title", "TP1": "artist", "TP2": "albumArtist", "TAL": "album",
+	"TCO": "genre", "TRK": "track", "TYE": "year",
+}
+
+/* 0xFF 0x00 → 0xFF の unsynchronisation を戻す */
+func deUnsync(b []byte) []byte {
+	out := make([]byte, 0, len(b))
+	for i := 0; i < len(b); i++ {
+		out = append(out, b[i])
+		if b[i] == 0xff && i+1 < len(b) && b[i+1] == 0x00 {
+			i++
+		}
+	}
+	return out
+}
+
+func isFrameID(id string) bool {
+	if id == "" {
+		return false
+	}
+	for _, c := range id {
+		if !((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) {
+			return false
+		}
+	}
+	return true
+}
+
+/* エンコーディングに応じた NUL 終端位置を探し、終端直後のオフセットを返す */
+func skipTerminatedString(data []byte, start int, encodingByte byte) int {
+	if encodingByte == 1 || encodingByte == 2 { // UTF-16: 2 バイト単位の 0x0000
+		for i := start; i+1 < len(data); i += 2 {
+			if data[i] == 0 && data[i+1] == 0 {
+				return i + 2
+			}
+		}
+		return len(data)
+	}
+	if start >= len(data) {
+		return len(data)
+	}
+	idx := bytes.IndexByte(data[start:], 0)
+	if idx == -1 {
+		return len(data)
+	}
+	return start + idx + 1
+}
+
+// ID3v2 (v2.2 / v2.3 / v2.4) タグをパースする。lib/id3.js の parseId3 と同一挙動。
+func parseID3(buf []byte, fileOffset int64) metadataResult {
 	var r metadataResult
 	if len(buf) < 10 || string(buf[:3]) != "ID3" {
 		return r
 	}
-	major := buf[3]
+	major := int(buf[3])
 	flags := buf[5]
-	size := syncsafe(buf[6:10])
-	pos := 10
-	end := min(len(buf), 10+size)
-	if flags&0x40 != 0 && pos+4 <= end {
-		extSize := binary.BigEndian.Uint32(buf[pos : pos+4])
-		if major == 4 {
-			pos += int(extSize)
-		} else {
-			pos += int(extSize) + 4
+	tagSize := syncsafe(buf[6:10])
+	tagEnd := min(len(buf), 10+tagSize)
+
+	body := buf[10:tagEnd]
+	unsyncedGlobally := false
+	if flags&0x80 != 0 && major < 4 { // v2.4 は通常フレーム単位
+		body = deUnsync(body)
+		unsyncedGlobally = true
+	}
+
+	pos := 0
+	// 拡張ヘッダをスキップ
+	if flags&0x40 != 0 && len(body) >= 4 {
+		if major == 3 {
+			pos = 4 + int(binary.BigEndian.Uint32(body[:4]))
+		} else if major == 4 {
+			pos = syncsafe(body[:4])
 		}
 	}
-	for pos+10 <= end {
-		id := string(buf[pos : pos+4])
-		if strings.Trim(id, "\x00") == "" {
+
+	rawTags := map[string]string{}
+	idLen, hdrLen := 4, 10
+	if major == 2 {
+		idLen, hdrLen = 3, 6
+	}
+
+	for pos >= 0 && pos+hdrLen <= len(body) {
+		if body[pos] == 0 { // パディング領域
 			break
 		}
-		frameSize := int(binary.BigEndian.Uint32(buf[pos+4 : pos+8]))
-		if major == 4 {
-			frameSize = syncsafe(buf[pos+4 : pos+8])
-		}
-		dataPos := pos + 10
-		if frameSize <= 0 || dataPos+frameSize > end {
+		id := string(body[pos : pos+idLen])
+		if !isFrameID(id) {
 			break
 		}
-		body := buf[dataPos : dataPos+frameSize]
-		switch id {
-		case "TIT2", "TT2":
-			r.Tags.Title = decodeID3Text(body)
-		case "TPE1", "TP1":
-			r.Tags.Artist = decodeID3Text(body)
-		case "TPE2", "TP2":
-			r.Tags.AlbumArtist = decodeID3Text(body)
-		case "TALB", "TAL":
-			r.Tags.Album = decodeID3Text(body)
-		case "TCON", "TCO":
-			r.Tags.Genre = normalizeGenre(decodeID3Text(body))
-		case "TYER", "TDRC", "TYE":
-			r.Tags.Year = parseYear(decodeID3Text(body))
-		case "TRCK", "TRK":
-			r.Tags.Track = parseLeadingInt(decodeID3Text(body))
-		case "APIC":
-			if art := parseAPIC(body, absoluteStart+int64(dataPos)); art != nil {
-				r.Art = art
+		var size int
+		frameFlags := 0
+		if major == 2 {
+			size = int(body[pos+3])<<16 | int(body[pos+4])<<8 | int(body[pos+5])
+		} else {
+			if major == 4 {
+				size = syncsafe(body[pos+idLen : pos+idLen+4])
+			} else {
+				size = int(binary.BigEndian.Uint32(body[pos+idLen : pos+idLen+4]))
+			}
+			frameFlags = int(binary.BigEndian.Uint16(body[pos+idLen+4 : pos+idLen+6]))
+		}
+		dataStart := pos + hdrLen
+		if size < 0 || dataStart+size > len(body) {
+			break
+		}
+		data := body[dataStart : dataStart+size]
+		pos = dataStart + size
+
+		// 圧縮・暗号化フレームは扱わない
+		if major == 3 && frameFlags&0x00c0 != 0 {
+			continue
+		}
+		if major == 4 && frameFlags&0x000c != 0 {
+			continue
+		}
+
+		frameUnsynced := false
+		skippedDLI := 0
+		if major == 4 && frameFlags&0x0002 != 0 {
+			data = deUnsync(data)
+			frameUnsynced = true
+		}
+		if major == 4 && frameFlags&0x0001 != 0 { // data length indicator
+			if len(data) >= 4 {
+				data = data[4:]
+			} else {
+				data = nil
+			}
+			skippedDLI = 4
+		}
+
+		if field, ok := id3TextFrames[id]; ok && len(data) >= 1 {
+			value := decodeID3Text(data[0], data[1:])
+			if value != "" {
+				if _, exists := rawTags[field]; !exists {
+					if field == "genre" {
+						value = resolveGenre(value)
+					}
+					rawTags[field] = value
+				}
+			}
+			continue
+		}
+
+		if (id == "APIC" || id == "PIC") && len(data) > 4 && r.Art == nil {
+			enc := data[0]
+			var p int
+			var mimeType string
+			if id == "PIC" { // v2.2: 画像フォーマット 3 文字
+				if strings.EqualFold(string(data[1:4]), "png") {
+					mimeType = "image/png"
+				} else {
+					mimeType = "image/jpeg"
+				}
+				p = 4
+			} else {
+				mimeEnd := bytes.IndexByte(data[1:], 0)
+				if mimeEnd < 0 {
+					continue
+				}
+				mimeType = string(data[1 : 1+mimeEnd])
+				if mimeType == "" {
+					mimeType = "image/jpeg"
+				}
+				p = 1 + mimeEnd + 1
+			}
+			p++ // picture type
+			p = skipTerminatedString(data, p, enc) // description
+			if p >= len(data) {
+				continue
+			}
+			if unsyncedGlobally || frameUnsynced {
+				// unsync 解除でファイル内オフセットがずれるため画像バイト列自体を保持
+				r.Art = &artInfo{Mime: mimeType, DataBase64: base64.StdEncoding.EncodeToString(data[p:])}
+			} else {
+				offset := fileOffset + 10 + int64(dataStart) + int64(skippedDLI) + int64(p)
+				r.Art = &artInfo{Mime: mimeType, Offset: &offset, Length: int64(len(data) - p)}
 			}
 		}
-		pos = dataPos + frameSize
+	}
+
+	r.Tags.Title = rawTags["title"]
+	r.Tags.Artist = rawTags["artist"]
+	r.Tags.AlbumArtist = rawTags["albumArtist"]
+	r.Tags.Album = rawTags["album"]
+	r.Tags.Genre = rawTags["genre"]
+	if v, ok := rawTags["track"]; ok {
+		r.Tags.Track = parseLeadingInt(v)
+	}
+	if v, ok := rawTags["year"]; ok {
+		r.Tags.Year = parseYear(v)
 	}
 	return r
 }
 
-func decodeID3Text(body []byte) string {
-	if len(body) == 0 {
-		return ""
-	}
-	enc := body[0]
-	raw := trimNull(body[1:])
+// ID3v2 のエンコーディングバイト付きテキストのデコード (lib/util.js decodeId3Text と同一)
+func decodeID3Text(enc byte, raw []byte) string {
+	var s string
 	switch enc {
-	case 0:
-		return decodeLoose(raw)
-	case 1, 2:
-		return decodeUTF16(raw)
-	case 3:
-		if utf8.Valid(raw) {
-			return string(raw)
+	case 1: // UTF-16 with BOM
+		if len(raw) >= 2 && raw[0] == 0xfe && raw[1] == 0xff {
+			s = decodeUTF16Strict(raw[2:], true)
+		} else {
+			body := raw
+			if len(raw) >= 2 && raw[0] == 0xff && raw[1] == 0xfe {
+				body = raw[2:]
+			}
+			s = decodeUTF16Strict(body, false)
 		}
-		return decodeLoose(raw)
-	default:
-		return decodeLoose(raw)
+	case 2: // UTF-16BE without BOM
+		s = decodeUTF16Strict(raw, true)
+	case 3: // UTF-8
+		if utf8.Valid(raw) {
+			s = string(raw)
+		} else {
+			s = decodeLoose(raw)
+		}
+	default: // 0: 仕様上は ISO-8859-1 だが実態に合わせて緩く解釈
+		s = decodeLoose(raw)
 	}
+	// 終端 NUL と前後空白を除去し、複数値は先頭のみ採用
+	s = strings.TrimRight(s, "\x00")
+	if i := strings.IndexByte(s, 0); i >= 0 {
+		s = s[:i]
+	}
+	return strings.TrimSpace(s)
 }
 
+// エンコーディング宣言が当てにならないタグ文字列のデコード。
+// ASCII → そのまま / UTF-8 → Shift_JIS → Latin-1 の順に試す (lib/util.js decodeLoose)。
 func decodeLoose(raw []byte) string {
-	raw = trimNull(raw)
 	if len(raw) == 0 {
 		return ""
 	}
+	ascii := true
+	for _, b := range raw {
+		if b >= 0x80 {
+			ascii = false
+			break
+		}
+	}
+	if ascii {
+		return string(raw)
+	}
 	if utf8.Valid(raw) {
 		return string(raw)
+	}
+	if s, ok := decodeShiftJIS(raw); ok {
+		return s
 	}
 	runes := make([]rune, len(raw))
 	for i, b := range raw {
@@ -883,55 +1113,54 @@ func decodeLoose(raw []byte) string {
 	return string(runes)
 }
 
-func decodeUTF16(raw []byte) string {
-	if len(raw) == 0 {
-		return ""
-	}
-	be := false
-	if len(raw) >= 2 {
-		if raw[0] == 0xfe && raw[1] == 0xff {
-			be = true
-			raw = raw[2:]
-		} else if raw[0] == 0xff && raw[1] == 0xfe {
-			raw = raw[2:]
+// Shift_JIS (CP932) の厳密デコード。不正なバイト列は ok=false。
+// テーブルは build/gen-sjis/gen.mjs が Node の TextDecoder から生成 (sjis.go)。
+func decodeShiftJIS(raw []byte) (string, bool) {
+	var sb strings.Builder
+	for i := 0; i < len(raw); {
+		b := raw[i]
+		if r, ok := sjisSingle[b]; ok {
+			sb.WriteRune(r)
+			i++
+			continue
 		}
-	}
-	u16 := make([]uint16, 0, len(raw)/2)
-	for i := 0; i+1 < len(raw); i += 2 {
-		if be {
-			u16 = append(u16, binary.BigEndian.Uint16(raw[i:i+2]))
-		} else {
-			u16 = append(u16, binary.LittleEndian.Uint16(raw[i:i+2]))
+		if i+1 < len(raw) {
+			if r, ok := sjisDouble[uint16(b)<<8|uint16(raw[i+1])]; ok {
+				sb.WriteRune(r)
+				i += 2
+				continue
+			}
 		}
+		return "", false
 	}
-	return strings.TrimRight(string(utf16.Decode(u16)), "\x00")
+	return sb.String(), true
 }
 
-func parseAPIC(body []byte, absBodyStart int64) *artInfo {
-	if len(body) < 4 {
-		return nil
+// UTF-16 の厳密デコード (TextDecoder の fatal 相当: 奇数長・不正サロゲートは空文字)
+func decodeUTF16Strict(raw []byte, be bool) string {
+	if len(raw)%2 != 0 {
+		return ""
 	}
-	p := 1
-	mimeEnd := bytes.IndexByte(body[p:], 0)
-	if mimeEnd < 0 {
-		return nil
+	u := make([]uint16, 0, len(raw)/2)
+	for i := 0; i+1 < len(raw); i += 2 {
+		if be {
+			u = append(u, binary.BigEndian.Uint16(raw[i:i+2]))
+		} else {
+			u = append(u, binary.LittleEndian.Uint16(raw[i:i+2]))
+		}
 	}
-	mimeType := string(body[p : p+mimeEnd])
-	p += mimeEnd + 1
-	if p >= len(body) {
-		return nil
+	for i := 0; i < len(u); i++ {
+		c := u[i]
+		if c >= 0xd800 && c < 0xdc00 {
+			if i+1 >= len(u) || u[i+1] < 0xdc00 || u[i+1] > 0xdfff {
+				return ""
+			}
+			i++
+		} else if c >= 0xdc00 && c <= 0xdfff {
+			return ""
+		}
 	}
-	p++
-	descEnd := bytes.IndexByte(body[p:], 0)
-	if descEnd < 0 {
-		return nil
-	}
-	p += descEnd + 1
-	if p >= len(body) {
-		return nil
-	}
-	offset := absBodyStart + int64(p)
-	return &artInfo{Mime: mimeType, Offset: &offset, Length: int64(len(body) - p)}
+	return string(utf16.Decode(u))
 }
 
 func parseWAV(f *os.File, fileSize int64) metadataResult {
@@ -987,7 +1216,11 @@ func parseWAVInfo(b []byte, t *tags) {
 		if size < 0 || p+8+size > len(b) {
 			break
 		}
-		val := strings.TrimSpace(decodeLoose(b[p+8 : p+8+size]))
+		raw := b[p+8 : p+8+size]
+		if i := bytes.IndexByte(raw, 0); i >= 0 { // 最初の NUL で切る (Node と同一)
+			raw = raw[:i]
+		}
+		val := strings.TrimSpace(decodeLoose(raw))
 		switch id {
 		case "INAM":
 			t.Title = val
@@ -1199,23 +1432,48 @@ func parseMP4(f *os.File, fileSize int64) metadataResult {
 		case "stsd":
 			b := readAt(f, a.dataStart, min64(a.size-a.header, 64))
 			if len(b) >= 16 {
-				r.Codec = string(b[12:16])
+				// lib/mp4.js と同一のコーデック判別
+				switch fmtName := string(b[12:16]); fmtName {
+				case "alac":
+					r.Codec = "alac"
+				case "mp4a":
+					r.Codec = "aac"
+				case "flac":
+					r.Codec = "flac"
+				default:
+					r.Codec = strings.TrimSpace(fmtName)
+				}
 			}
 		case "©nam":
-			r.Tags.Title = readMP4Text(f, a)
+			setIfEmpty(&r.Tags.Title, readMP4Text(f, a))
 		case "©ART":
-			r.Tags.Artist = readMP4Text(f, a)
+			setIfEmpty(&r.Tags.Artist, readMP4Text(f, a))
 		case "aART":
-			r.Tags.AlbumArtist = readMP4Text(f, a)
+			setIfEmpty(&r.Tags.AlbumArtist, readMP4Text(f, a))
 		case "©alb":
-			r.Tags.Album = readMP4Text(f, a)
+			setIfEmpty(&r.Tags.Album, readMP4Text(f, a))
 		case "©gen":
-			r.Tags.Genre = readMP4Text(f, a)
+			setIfEmpty(&r.Tags.Genre, readMP4Text(f, a))
 		case "©day":
-			r.Tags.Year = parseYear(readMP4Text(f, a))
+			if r.Tags.Year == nil {
+				r.Tags.Year = parseYear(readMP4Text(f, a))
+			}
 		case "trkn":
 			if n := readMP4Track(f, a); n != nil {
 				r.Tags.Track = n
+			}
+		case "gnre":
+			// ID3v1 ジャンル番号 + 1 で格納されている (lib/mp4.js と同一)
+			if r.Tags.Genre == "" {
+				if data, ok := firstDataAtom(f, a); ok {
+					b := readAt(f, data.dataStart+8, 2)
+					if len(b) == 2 {
+						n := int(binary.BigEndian.Uint16(b)) - 1
+						if n >= 0 && n < len(id3Genres) {
+							r.Tags.Genre = id3Genres[n]
+						}
+					}
+				}
 			}
 		case "covr":
 			if art := readMP4Art(f, a); art != nil {
@@ -1273,7 +1531,7 @@ func isContainerAtom(typ string) bool {
 	case "moov", "trak", "mdia", "minf", "stbl", "udta", "meta", "ilst", "stsd":
 		return true
 	default:
-		return strings.HasPrefix(typ, "\xa9") || typ == "trkn" || typ == "covr"
+		return strings.HasPrefix(typ, "\xa9") || typ == "trkn" || typ == "covr" || typ == "gnre" || typ == "aART"
 	}
 }
 
@@ -1387,44 +1645,57 @@ func (s *appState) serveStream(w http.ResponseWriter, r *http.Request, id string
 	_, _ = io.CopyN(w, f, end-start+1)
 }
 
+func rangeDigitsOK(s string) bool {
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// Node の /^bytes=(\d*)-(\d*)$/ と同一挙動: 形式に合わないヘッダは
+// 「Range なし」として全体を 200 で返す (multi-range 等も同様)。
 func parseRange(header string, total int64) (int64, int64, int, bool) {
 	start, end := int64(0), total-1
 	status := http.StatusOK
-	if header == "" {
-		return start, end, status, true
-	}
 	if !strings.HasPrefix(header, "bytes=") {
 		return start, end, status, true
 	}
-	parts := strings.SplitN(strings.TrimPrefix(header, "bytes="), "-", 2)
-	if len(parts) != 2 || (parts[0] == "" && parts[1] == "") {
+	spec := strings.TrimPrefix(header, "bytes=")
+	dash := strings.IndexByte(spec, '-')
+	if dash < 0 {
 		return start, end, status, true
 	}
-	if parts[0] == "" {
-		suffix, err := strconv.ParseInt(parts[1], 10, 64)
-		if err != nil || suffix <= 0 {
-			return 0, 0, 0, false
-		}
-		if suffix > total {
-			suffix = total
+	a, b := spec[:dash], spec[dash+1:]
+	if !rangeDigitsOK(a) || !rangeDigitsOK(b) || (a == "" && b == "") {
+		return start, end, status, true
+	}
+	if a == "" {
+		suffix, err := strconv.ParseInt(b, 10, 64)
+		if err != nil {
+			return start, end, status, true
 		}
 		start = total - suffix
+		if start < 0 {
+			start = 0
+		}
 	} else {
-		n, err := strconv.ParseInt(parts[0], 10, 64)
+		n, err := strconv.ParseInt(a, 10, 64)
 		if err != nil {
-			return 0, 0, 0, false
+			return start, end, status, true
 		}
 		start = n
-		if parts[1] != "" {
-			n, err = strconv.ParseInt(parts[1], 10, 64)
+		if b != "" {
+			n, err = strconv.ParseInt(b, 10, 64)
 			if err != nil {
-				return 0, 0, 0, false
+				return start, end, status, true
 			}
 			end = min64(n, total-1)
 		}
 	}
 	if start > end || start >= total {
-		return 0, 0, 0, false
+		return 0, 0, 0, false // 416
 	}
 	return start, end, http.StatusPartialContent, true
 }
@@ -1543,6 +1814,60 @@ func (s *appState) resolveTrackPath(t track) (string, bool) {
 	return full, full == base || strings.HasPrefix(full, base+string(filepath.Separator))
 }
 
+// ブラウザ接続の監視 (--exit-on-close): フロントが張る SSE 接続でページ数を数え、
+// 全ページが閉じて猶予時間が過ぎたらプロセスを終了する (server.js servePresence と同一挙動)
+const exitGrace = 8 * time.Second
+
+func (s *appState) servePresence(w http.ResponseWriter, r *http.Request) {
+	fl, ok := w.(http.Flusher)
+	if !ok {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "streaming unsupported"})
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.WriteString(w, "retry: 3000\n\n")
+	fl.Flush()
+
+	s.presenceMu.Lock()
+	s.presenceCount++
+	if s.presenceTimer != nil {
+		s.presenceTimer.Stop()
+		s.presenceTimer = nil
+	}
+	s.presenceMu.Unlock()
+
+	ticker := time.NewTicker(25 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-r.Context().Done():
+			s.presenceMu.Lock()
+			s.presenceCount--
+			if s.exitOnClose && s.presenceCount <= 0 {
+				if s.presenceTimer != nil {
+					s.presenceTimer.Stop()
+				}
+				s.presenceTimer = time.AfterFunc(exitGrace, func() {
+					s.presenceMu.Lock()
+					n := s.presenceCount
+					s.presenceMu.Unlock()
+					if n <= 0 {
+						fmt.Println("ブラウザが閉じられたため macca を終了します")
+						os.Exit(0)
+					}
+				})
+			}
+			s.presenceMu.Unlock()
+			return
+		case <-ticker.C:
+			_, _ = io.WriteString(w, ": ping\n\n")
+			fl.Flush()
+		}
+	}
+}
+
 func (s *appState) serveDevices(w http.ResponseWriter) {
 	devices := listDevices()
 	type outDevice struct {
@@ -1609,6 +1934,20 @@ func listDevices() []device {
 				if !strings.HasPrefix(e.Name(), ".") {
 					out = append(out, device{Path: filepath.Join(base, e.Name()), Label: e.Name()})
 				}
+			}
+		}
+		// gvfs が FUSE マウントした MTP デバイス (GNOME 等)。
+		// マウント直下はデバイス内ストレージごとのフォルダになっている
+		gvfs := fmt.Sprintf("/run/user/%d/gvfs", os.Getuid())
+		mounts, _ := os.ReadDir(gvfs)
+		for _, m := range mounts {
+			if !strings.HasPrefix(m.Name(), "mtp:") {
+				continue
+			}
+			root := filepath.Join(gvfs, m.Name())
+			storages, _ := os.ReadDir(root)
+			for _, st := range storages {
+				out = append(out, device{Path: filepath.Join(root, st.Name()), Label: "MTP: " + st.Name()})
 			}
 		}
 	}
@@ -1805,11 +2144,10 @@ func syncsafe(b []byte) int {
 	return int(b[0]&0x7f)<<21 | int(b[1]&0x7f)<<14 | int(b[2]&0x7f)<<7 | int(b[3]&0x7f)
 }
 
-func trimNull(b []byte) []byte {
-	for len(b) > 0 && b[len(b)-1] == 0 {
-		b = b[:len(b)-1]
+func setIfEmpty(dst *string, v string) {
+	if *dst == "" && v != "" {
+		*dst = v
 	}
-	return b
 }
 
 func parseYear(s string) *int {
@@ -1840,18 +2178,35 @@ func parseLeadingInt(s string) *int {
 	return &n
 }
 
-var id3Genres = map[int]string{17: "Rock"}
+// ID3v1 標準ジャンル (lib/id3.js GENRES と同一の 80 エントリ)
+var id3Genres = []string{
+	"Blues", "Classic Rock", "Country", "Dance", "Disco", "Funk", "Grunge", "Hip-Hop",
+	"Jazz", "Metal", "New Age", "Oldies", "Other", "Pop", "R&B", "Rap",
+	"Reggae", "Rock", "Techno", "Industrial", "Alternative", "Ska", "Death Metal", "Pranks",
+	"Soundtrack", "Euro-Techno", "Ambient", "Trip-Hop", "Vocal", "Jazz+Funk", "Fusion", "Trance",
+	"Classical", "Instrumental", "Acid", "House", "Game", "Sound Clip", "Gospel", "Noise",
+	"Alternative Rock", "Bass", "Soul", "Punk", "Space", "Meditative", "Instrumental Pop", "Instrumental Rock",
+	"Ethnic", "Gothic", "Darkwave", "Techno-Industrial", "Electronic", "Pop-Folk", "Eurodance", "Dream",
+	"Southern Rock", "Comedy", "Cult", "Gangsta", "Top 40", "Christian Rap", "Pop/Funk", "Jungle",
+	"Native American", "Cabaret", "New Wave", "Psychedelic", "Rave", "Showtunes", "Trailer", "Lo-Fi",
+	"Tribal", "Acid Punk", "Acid Jazz", "Polka", "Retro", "Musical", "Rock & Roll", "Hard Rock",
+}
 
-func normalizeGenre(s string) string {
-	if strings.HasPrefix(s, "(") {
-		end := strings.IndexByte(s, ')')
-		if end > 1 {
-			if n, err := strconv.Atoi(s[1:end]); err == nil {
-				if g := id3Genres[n]; g != "" {
-					return g
-				}
-			}
+// "(17)" や "13" のような ID3v1 番号参照をジャンル名に解決する (Node の /^\(?(\d+)\)?$/ と同一)
+func resolveGenre(s string) string {
+	t := strings.TrimSpace(s)
+	t = strings.TrimPrefix(t, "(")
+	t = strings.TrimSuffix(t, ")")
+	if t == "" {
+		return s
+	}
+	for _, c := range t {
+		if c < '0' || c > '9' {
+			return s
 		}
+	}
+	if n, err := strconv.Atoi(t); err == nil && n >= 0 && n < len(id3Genres) {
+		return id3Genres[n]
 	}
 	return s
 }

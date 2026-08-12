@@ -151,7 +151,9 @@ go run ./cmd/macca     # Go 1.23+ の場合
 node server.js         # Node.js 18+ の場合
 ```
 
-ダブルクリック用ランチャーも同梱しています（Go バイナリがあればそれを、なければ Node を起動）:
+ダブルクリック用ランチャーも同梱しています。リポジトリ直下に
+`go build -o macca ./cmd/macca` で Go バイナリを置いておくとそれを優先起動し、
+なければ Node.js 版を起動します（どちらで動いているかはヘッダのバッジで分かります）:
 
 - **macOS** — `macca.app`（Dock 対応・ターミナル不要）または `macca.command`
 - **Windows** — `macca.bat`

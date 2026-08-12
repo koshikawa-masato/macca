@@ -170,6 +170,26 @@ go build -o macca ./cmd/macca && \
   MACCA_SERVER_BIN=./macca npm test       # Go 実装に対する受け入れ + パリティテスト
 ```
 
+### ビルド
+
+Go 1.23+ が必要です。フロントエンドは `server/static/public/` にあり、
+Go バイナリへ自動で埋め込まれます（コピー等の前処理は不要）。
+
+```sh
+go build -o macca ./cmd/macca   # サーバ単体。リポジトリ直下に置くとランチャー/macca.app がこれを優先起動
+./build/release.sh              # 全 OS 向けバイナリ一括ビルド → build/release/
+./build/dmg/build.sh            # macOS 配布用 DMG (要 macOS)
+./build/msi/build.sh            # Windows 配布用 MSI (要 msitools: brew install msitools)
+```
+
+普段の開発では再実行不要な生成物のビルド:
+
+```sh
+./build/macca-app/build.sh              # macca.app ランチャー (launcher.swift 変更時)
+./build/alac-wasm/build.sh              # alac.wasm (要 emscripten)
+node build/gen-sjis/gen.mjs > server/sjis.go   # Shift_JIS テーブル
+```
+
 合成フィクスチャ（壊れタグ・Shift_JIS 偽装・VBR・ID3v2.2・unsync などの意地悪ケース含む）と
 本物の ALAC ファイルで、パーサ・ブラウザ側デコーダ（波形復元精度まで）・HTTP API を検証します。
 

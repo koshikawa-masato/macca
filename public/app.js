@@ -340,13 +340,6 @@ function renderStats() {
   const totalSize = state.tracks.reduce((s, t) => s + t.size, 0);
   $('#stats').textContent =
     `${state.tracks.length.toLocaleString()} 曲 · ${(totalDur / 3600).toFixed(1)} 時間 · ${fmtSize(totalSize)}`;
-  $('#lib-info').innerHTML =
-    `${esc(state.dir)}<br>` +
-    (engine
-      ? '内蔵デコーダ: あり（ALAC / AIFF もブラウザ内で再生）'
-      : state.ffmpeg
-        ? 'ffmpeg: あり（全形式再生可）'
-        : '<span class="warn">ffmpeg なし: Chrome 等では ALAC / AIFF が再生できません（Safari 推奨）</span>');
 }
 
 // ---- 再生 -----------------------------------------------------------------

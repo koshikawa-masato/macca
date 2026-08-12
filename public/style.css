@@ -110,16 +110,6 @@ body {
 }
 .fmt-chip.active { border-color: var(--accent); color: var(--accent); }
 
-#lib-info {
-  margin-top: 20px;
-  padding: 8px;
-  font-size: 11px;
-  color: var(--fg-dim);
-  word-break: break-all;
-  line-height: 1.6;
-}
-#lib-info .warn { color: #d8b45a; }
-
 /* ---- デバイス (リムーバブルストレージ) ---- */
 .dev-empty { padding: 2px 12px; font-size: 12px; color: var(--fg-dim); }
 .dev-row {

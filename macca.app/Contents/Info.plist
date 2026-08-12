@@ -18,8 +18,6 @@
 	<string>macca-launcher</string>
 	<key>CFBundleIconFile</key>
 	<string>macca</string>
-	<key>LSUIElement</key>
-	<true/>
 	<key>NSHumanReadableCopyright</key>
 	<string>MIT License</string>
 </dict>

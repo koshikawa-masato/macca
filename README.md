@@ -4,7 +4,7 @@
 
 mp3 / AIFF / ALAC (m4a) / AAC / FLAC / WAV の入ったフォルダを指定してサーバを起動するだけで、
 ブラウザからライブラリの閲覧・検索・再生ができます。
-**依存パッケージゼロ**（Node.js 標準ライブラリのみ）で、`npm install` 不要。
+**依存パッケージゼロ**（Node.js 標準ライブラリのみ）で、`npm install` も ffmpeg も不要。
 ファイルには一切書き込まず読み取り専用で動くので、既存のライブラリを壊す心配がありません。
 
 ![曲一覧](docs/screenshot-songs.png)
@@ -42,16 +42,27 @@ node server.js ~/Music/MyLibrary
 
 ### ブラウザと再生形式について
 
-| 形式 | Safari | Chrome / Edge / Firefox |
-|------|--------|--------------------------|
-| MP3 / AAC / WAV | ○ | ○ |
-| FLAC | ○ | ○ |
-| **ALAC (m4a)** | ○ | ✕（ffmpeg があれば ○） |
-| **AIFF** | ○ | ✕（ffmpeg があれば ○） |
+**全対応形式（MP3 / AAC / ALAC / AIFF / FLAC / WAV）がすべてのモダンブラウザで再生できます。ffmpeg は不要です。**
 
-ALAC と AIFF をネイティブ再生できるのは Safari だけです。それ以外のブラウザで聴く場合、
-サーバマシンに [ffmpeg](https://ffmpeg.org/)（`brew install ffmpeg`）が入っていれば、
-macca がその場で **WAV にロスレス変換**してストリーミングします（元ファイルは変更しません）。
+ブラウザがネイティブ再生できない ALAC と AIFF は、macca に同梱のデコーダで
+ブラウザ内デコードします（ロスレス・シーク可能）:
+
+- **ALAC**: Apple がオープンソース化した公式デコーダ（Apache 2.0）を WASM 化して同梱（わずか 16KB）
+- **AIFF**: 実質ビッグエンディアン PCM なので純 JS でデコード
+
+サーバに ffmpeg があれば、それ以外の未知の形式に当たったときのフォールバック
+（WAV へのロスレス変換ストリーミング）としてだけ使われます。
+
+### 再生エンジン
+
+`<audio>` タグ任せにせず、Web Audio API ベースの再生エンジンを実装しています:
+
+- **ギャップレス再生** — 次の曲を先読みデコードし、現在の曲の終端にサンプル精度で連結。
+  ライブ盤・クラシック・コンセプトアルバムが途切れません
+- **リサンプリング回避** — AudioContext を音源のサンプルレートに合わせて生成するため、
+  44.1kHz の音源が不用意に 48kHz へ変換されて劣化することがありません
+- **音量正規化**（プレーヤ右下の「N」ボタン）— デコード済み PCM から実測した
+  ラウドネスで曲間の音量差を揃えます（iTunes のサウンドチェックに相当。ファイルは変更しません）
 
 ## 機能
 
@@ -81,25 +92,34 @@ macca がその場で **WAV にロスレス変換**してストリーミング�
 ## 開発
 
 ```sh
-npm test        # Node 標準の node:test で 12 テスト（外部依存なし）
+npm test        # Node 標準の node:test で 17 テスト（外部依存なし）
 ```
 
-テストは合成した mp3 / m4a (ALAC) / AIFF / FLAC / WAV フィクスチャを生成して、
-パーサと HTTP API（Range リクエスト・アートワーク配信・パストラバーサル拒否）を検証します。
+テストは合成した mp3 / m4a (ALAC) / AIFF / FLAC / WAV フィクスチャと本物の ALAC ファイル
+（afconvert で生成しコミット済み）を使い、パーサ・ブラウザ側デコーダ（ALAC の波形復元精度まで）・
+HTTP API（Range リクエスト・アートワーク配信・パストラバーサル拒否）を検証します。
 
 ```
-server.js          HTTP サーバ (ストリーミング / API / 静的配信)
+server.js            HTTP サーバ (ストリーミング / API / 静的配信)
 lib/
-  scan.js          ライブラリスキャン + キャッシュ
-  metadata.js      拡張子ごとのディスパッチ
-  id3.js           ID3v2 パーサ
-  mp3.js           MP3 再生時間推定
-  mp4.js           MP4/M4A (ALAC/AAC) パーサ
-  flac.js          FLAC パーサ
-  aiff.js          AIFF パーサ
-  wav.js           WAV パーサ
-public/            フロントエンド (素の HTML/CSS/JS)
-test/              フィクスチャ生成 + テスト
+  scan.js            ライブラリスキャン + キャッシュ
+  metadata.js        拡張子ごとのディスパッチ
+  id3.js             ID3v2 パーサ
+  mp3.js             MP3 再生時間推定
+  mp4.js             MP4/M4A (ALAC/AAC) パーサ
+  flac.js            FLAC パーサ
+  aiff.js            AIFF パーサ
+  wav.js             WAV パーサ
+public/              フロントエンド (素の HTML/CSS/JS)
+public/player/
+  engine.js          Web Audio 再生エンジン (ギャップレス / 正規化 / レート追従)
+  demux-mp4.js       MP4 デマルチプレクサ (ALAC パケット抽出)
+  alac.js + alac.wasm  Apple ALAC デコーダ (WASM, Apache 2.0)
+  decode-aiff.js     AIFF 純 JS デコーダ
+  probe.js           サンプルレート検出
+  loudness.js        音量正規化ゲイン計算
+build/alac-wasm/     alac.wasm のビルドスクリプト (通常は再実行不要)
+test/                フィクスチャ生成 + テスト
 ```
 
 ## 既製品という選択肢
@@ -117,11 +137,15 @@ macca はこれらと違い「インストール不要・データベース不�
 
 ## ロードマップ
 
+- [x] ギャップレス再生
+- [x] ALAC / AIFF のブラウザ内デコード（ffmpeg 不要化）
+- [x] 音量正規化
 - [ ] プレイリスト（M3U 読み書き）
-- [ ] ギャップレス再生
 - [ ] タグ編集
 - [ ] Ogg Vorbis / Opus のメタデータパース（再生は対応済み）
 
 ## ライセンス
 
-MIT
+MIT。同梱の `public/player/alac.wasm` は
+[Apple Lossless Audio Codec](https://github.com/macosforge/alac)（Apache License 2.0）を
+WASM にビルドしたものです。

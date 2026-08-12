@@ -28,6 +28,7 @@ const STATIC_TYPES = {
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
   '.ico': 'image/x-icon',
+  '.wasm': 'application/wasm',
 };
 
 const COVER_NAMES = /^(cover|folder|front|album|jacket|artwork)\.(jpe?g|png)$/i;

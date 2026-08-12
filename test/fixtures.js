@@ -137,6 +137,9 @@ export function buildAiff(tags, art = null, seconds = 2) {
   const sampleRate = 8000;
   const numFrames = sampleRate * seconds;
   const ssnd = Buffer.alloc(8 + numFrames * 2); // offset + blockSize + 16bit mono
+  for (let i = 0; i < numFrames; i++) {
+    ssnd.writeInt16BE(Math.round(Math.sin(i * 0.2) * 8000), 8 + i * 2);
+  }
 
   const comm = Buffer.alloc(18);
   comm.writeUInt16BE(1, 0);            // channels

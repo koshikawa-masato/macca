@@ -8,3 +8,6 @@
 # 環境変数
 .env
 .env.local
+
+# ALAC WASM ビルド時にクローンされるソース (成果物 alac.wasm はコミットする)
+build/alac-wasm/alac-src/

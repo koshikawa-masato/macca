@@ -49,13 +49,14 @@ export class AudioEngine {
     this._bufferCache = new Map(); // trackId -> {buffer, trackGain} 直近のデコード結果
   }
 
-  /** デコード済みバッファの小さな LRU (再クリック・前の曲へ戻る操作を即時にする) */
+  /**
+   * デコード済みバッファのキャッシュ (1 エントリのみ)。
+   * 直近にデコードした曲 = ほぼ常に再生中の曲への参照なので追加メモリはゼロで、
+   * 同じ曲の再クリックやリピートを即時にする。
+   */
   _cachePut(id, buffer, trackGain) {
-    this._bufferCache.delete(id);
+    this._bufferCache.clear();
     this._bufferCache.set(id, { buffer, trackGain });
-    while (this._bufferCache.size > 2) {
-      this._bufferCache.delete(this._bufferCache.keys().next().value);
-    }
   }
 
   /** このエンジンでデコード・再生できる形式・長さか */
@@ -100,7 +101,7 @@ export class AudioEngine {
 
     this._startCurrent(track, decoded, 0, this.ctx.currentTime);
     this.ontrackstart?.(track, { auto: false });
-    this._prefetchNext(gen);
+    this._schedulePrefetch(gen);
   }
 
   pause() {
@@ -129,7 +130,16 @@ export class AudioEngine {
     cur.source.onended = this._makeEndedHandler(cur.source, this._gen);
     cur.source.start(now, offset);
     cur.startTime = now - offset;
-    this._scheduleNextIfReady();
+    // シーク位置に応じて先読みを取り直す。終端から離れたら
+    // 確保済みの次曲は解放してメモリを 1 曲分に戻す
+    if (this.next && cur.buffer.duration - offset > 60) {
+      this.next = null;
+    }
+    if (this.next) {
+      this._scheduleNextIfReady();
+    } else {
+      this._schedulePrefetch(this._gen);
+    }
   }
 
   stop() {
@@ -154,7 +164,7 @@ export class AudioEngine {
     if (!this.current) return;
     this._unscheduleNext();
     this.next = null;
-    this._prefetchNext(this._gen);
+    this._schedulePrefetch(this._gen);
   }
 
   // ---- 内部: コンテキスト管理 ----------------------------------------------
@@ -348,6 +358,7 @@ export class AudioEngine {
   }
 
   _teardownPlayback() {
+    clearTimeout(this._prefetchTimer);
     if (this.current) {
       this._cancelSource(this.current.source);
       try { this.current.gainNode.disconnect(); } catch { /* ignore */ }
@@ -355,6 +366,24 @@ export class AudioEngine {
     }
     this._unscheduleNext();
     this.next = null;
+  }
+
+  /**
+   * 次曲の先読みを現曲の終端 45 秒前まで遅らせる。
+   * 再生開始と同時に確保するとデコード済み PCM を常時 2 曲分 (数百 MB)
+   * 抱えることになるため、ギャップレスに間に合う直前まで待つ。
+   */
+  _schedulePrefetch(gen) {
+    clearTimeout(this._prefetchTimer);
+    const lead = 45;
+    const remain = this.duration - this.currentTime;
+    if (remain - lead < 0.5) {
+      this._prefetchNext(gen);
+      return;
+    }
+    this._prefetchTimer = setTimeout(() => {
+      if (gen === this._gen && this.current) this._prefetchNext(gen);
+    }, (remain - lead) * 1000);
   }
 
   /** 次曲を先読みデコードし、可能なら現曲の終端にスケジュールする */
@@ -433,7 +462,7 @@ export class AudioEngine {
     this.next = null;
     this._startCurrent(next.track, entry, 0, startTime);
     this.ontrackstart?.(next.track, { auto: true });
-    this._prefetchNext(gen);
+    this._schedulePrefetch(gen);
   }
 }
 

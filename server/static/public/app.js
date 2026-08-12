@@ -759,6 +759,15 @@ function applyLibrary(data) {
   state.ffmpeg = data.ffmpeg;
   state.dir = data.dir;
   state.sources = data.sources ?? [];
+  // サーバ実装 (Go / JS) のバッジを曲数の左に表示
+  const badge = $('#impl-badge');
+  if (data.server) {
+    const isGo = data.server === 'go';
+    badge.textContent = isGo ? 'Go' : 'JS';
+    badge.className = `impl-badge ${isGo ? 'go' : 'js'}`;
+    badge.title = `サーバ実装: ${isGo ? 'Go (シングルバイナリ)' : 'Node.js'}`;
+    badge.hidden = false;
+  }
   renderStats();
   renderFormatChips();
   renderDevices();

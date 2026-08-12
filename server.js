@@ -228,6 +228,7 @@ function serveLibrary(res) {
   }));
   sendJson(res, 200, {
     dir: state.rootDir,
+    server: 'node', // サーバ実装の識別 (UI のバッジ表示用)
     sources,
     scannedAt: state.scannedAt,
     scanning: state.scanning,

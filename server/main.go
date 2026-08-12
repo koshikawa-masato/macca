@@ -147,6 +147,7 @@ type librarySource struct {
 
 type libraryResponse struct {
 	Dir       string          `json:"dir"`
+	Server    string          `json:"server"` // サーバ実装の識別 (UI のバッジ表示用)
 	Sources   []librarySource `json:"sources"`
 	ScannedAt string          `json:"scannedAt"`
 	Scanning  bool            `json:"scanning"`
@@ -492,7 +493,7 @@ func (s *appState) serveLibrary(w http.ResponseWriter) {
 		})
 	}
 	writeJSON(w, http.StatusOK, libraryResponse{
-		Dir: s.rootDir, Sources: sources, ScannedAt: s.scannedAt, Scanning: s.scanning,
+		Dir: s.rootDir, Server: "go", Sources: sources, ScannedAt: s.scannedAt, Scanning: s.scanning,
 		Ffmpeg: s.ffmpeg, Errors: totalErrors, Tracks: outTracks,
 	})
 }

@@ -30,7 +30,7 @@ import (
 	"unicode/utf8"
 )
 
-//go:embed static/index.html
+//go:embed all:static
 var embeddedStatic embed.FS
 
 var supportedExt = map[string]bool{
@@ -414,8 +414,17 @@ func (s *appState) serveStatic(w http.ResponseWriter, r *http.Request, rel strin
 			return
 		}
 	}
+	embedPath := filepath.ToSlash(filepath.Join("static", "public", rel))
+	if data, err := fs.ReadFile(embeddedStatic, embedPath); err == nil {
+		writeStatic(w, filepath.Ext(rel), data)
+		return
+	}
+	if rel != "index.html" {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+		return
+	}
 	data, err := fs.ReadFile(embeddedStatic, "static/index.html")
-	if err != nil || rel != "index.html" {
+	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 		return
 	}

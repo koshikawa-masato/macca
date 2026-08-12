@@ -5,6 +5,10 @@
 
 cd "$(dirname "$0")" || exit 1
 
+if [ -x "./macca" ]; then
+  exec ./macca --open "$@"
+fi
+
 if ! command -v node >/dev/null 2>&1; then
   echo "Node.js が見つかりません。https://nodejs.org からインストールしてください。"
   echo "(Enter キーで閉じます)"

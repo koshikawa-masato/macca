@@ -546,6 +546,7 @@ if (engine) {
 
   setInterval(() => {
     if (state.mode !== 'engine' || !engine.playingTrack) return;
+    updatePlayButton(); // OS割り込みで止まった場合もボタン表示を実状態に合わせる
     const dur = engine.duration;
     $('#time-cur').textContent = fmtTime(engine.currentTime);
     $('#time-total').textContent = fmtTime(dur);

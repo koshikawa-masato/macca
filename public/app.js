@@ -1,4 +1,4 @@
-'use strict';
+import { AudioEngine } from './player/engine.js';
 
 // ---- 状態 -----------------------------------------------------------------
 
@@ -20,11 +20,16 @@ const state = {
   repeat: 'off',          // off | all | one
   playing: null,          // 再生中トラック
   transcoding: false,
+  mode: 'engine',         // engine (Web Audio) | element (<audio> フォールバック)
+  normalize: localStorage.getItem('macca-normalize') === '1',
 };
 
 const $ = (sel) => document.querySelector(sel);
 const audio = $('#audio');
 const collator = new Intl.Collator('ja');
+
+// Web Audio 再生エンジン (ギャップレス / ALAC・AIFF 内蔵デコード / 音量正規化)
+const engine = typeof AudioContext !== 'undefined' ? new AudioEngine() : null;
 
 // ---- ユーティリティ -------------------------------------------------------
 
@@ -76,6 +81,11 @@ function mimeFor(t) {
 
 function canPlayNatively(t) {
   return audio.canPlayType(mimeFor(t)) !== '';
+}
+
+/** エンジン内蔵デコーダ・ブラウザ・サーバ変換のいずれかで再生できるか */
+function canPlayTrack(t) {
+  return (engine?.canPlay(t)) || canPlayNatively(t) || state.ffmpeg;
 }
 
 function albumKey(t) {
@@ -165,7 +175,7 @@ function renderSongs(container) {
   const shown = list.slice(0, state.renderLimit);
   const rows = shown.map((t) => {
     const playing = state.playing?.id === t.id ? ' playing' : '';
-    const native = canPlayNatively(t) || state.ffmpeg;
+    const native = canPlayTrack(t);
     return `<tr class="song${playing}" data-id="${t.id}">
       <td class="num">${t.track ?? ''}</td>
       <td title="${esc(t.path)}">${esc(t.title)}${native ? '' : ' <span class="badge warn" title="このブラウザでは再生できません">再生不可</span>'}</td>
@@ -331,9 +341,11 @@ function renderStats() {
     `${state.tracks.length.toLocaleString()} 曲 · ${(totalDur / 3600).toFixed(1)} 時間 · ${fmtSize(totalSize)}`;
   $('#lib-info').innerHTML =
     `${esc(state.dir)}<br>` +
-    (state.ffmpeg
-      ? 'ffmpeg: あり（全形式再生可）'
-      : '<span class="warn">ffmpeg なし: Chrome 等では ALAC / AIFF が再生できません（Safari 推奨）</span>');
+    (engine
+      ? '内蔵デコーダ: あり（ALAC / AIFF もブラウザ内で再生）'
+      : state.ffmpeg
+        ? 'ffmpeg: あり（全形式再生可）'
+        : '<span class="warn">ffmpeg なし: Chrome 等では ALAC / AIFF が再生できません（Safari 推奨）</span>');
 }
 
 // ---- 再生 -----------------------------------------------------------------
@@ -347,20 +359,7 @@ function playFromList(id) {
   playTrack(list[idx]);
 }
 
-function playTrack(t) {
-  state.playing = t;
-  const native = canPlayNatively(t);
-  state.transcoding = !native && state.ffmpeg;
-
-  if (!native && !state.ffmpeg) {
-    toast(`${formatLabel(t)} はこのブラウザでは再生できません。Safari を使うか、サーバ側に ffmpeg をインストールしてください。`);
-  }
-
-  audio.src = `/api/stream/${t.id}${state.transcoding ? '?transcode=1' : ''}`;
-  audio.play().catch((err) => {
-    if (err.name !== 'AbortError') toast(`再生エラー: ${t.title}`);
-  });
-
+function updateNowPlayingUI(t) {
   $('#player').classList.remove('hidden');
   $('#np-title').textContent = t.title;
   $('#np-artist').textContent = [t.artist, t.album].filter(Boolean).join(' — ');
@@ -371,22 +370,56 @@ function playTrack(t) {
   badge.textContent = formatLabel(t) + (state.transcoding ? ' → WAV' : '');
 
   const art = $('#np-art');
-  if (t.hasArt || true) { // フォルダアートの可能性もあるため常に試す
-    art.src = `/api/artwork/${t.id}`;
-    art.hidden = false;
-    $('#np-art-placeholder').style.display = 'none';
-    art.onerror = () => {
-      art.hidden = true;
-      $('#np-art-placeholder').style.display = 'flex';
-    };
-  }
+  art.src = `/api/artwork/${t.id}`;
+  art.hidden = false;
+  $('#np-art-placeholder').style.display = 'none';
+  art.onerror = () => {
+    art.hidden = true;
+    $('#np-art-placeholder').style.display = 'flex';
+  };
 
-  $('#seekbar').disabled = state.transcoding; // 変換ストリームはシーク不可
+  $('#seekbar').disabled = state.mode === 'element' && state.transcoding;
   updatePlayButton();
   updateMediaSession(t);
   document.querySelectorAll('tr.song').forEach((tr) =>
     tr.classList.toggle('playing', tr.dataset.id === t.id));
   document.title = `${t.title} — macca`;
+}
+
+/** <audio> タグでの再生 (エンジン非対応形式・エンジン失敗時のフォールバック) */
+function playViaElement(t) {
+  state.mode = 'element';
+  const native = canPlayNatively(t);
+  state.transcoding = !native && state.ffmpeg;
+  if (!native && !state.ffmpeg) {
+    toast(`${formatLabel(t)} はこのブラウザでは再生できません。Safari を使うか、サーバ側に ffmpeg をインストールしてください。`);
+  }
+  audio.src = `/api/stream/${t.id}${state.transcoding ? '?transcode=1' : ''}`;
+  audio.play().catch((err) => {
+    if (err.name !== 'AbortError') toast(`再生エラー: ${t.title}`);
+  });
+}
+
+function playTrack(t) {
+  state.playing = t;
+  state.transcoding = false;
+
+  if (engine && engine.canPlay(t)) {
+    state.mode = 'engine';
+    audio.pause();
+    audio.removeAttribute('src');
+    engine.play(t).catch((err) => {
+      console.warn('エンジン再生に失敗、<audio> にフォールバックします:', err);
+      if (state.playing === t) {
+        playViaElement(t);
+        updateNowPlayingUI(t);
+      }
+    });
+  } else {
+    engine?.stop();
+    playViaElement(t);
+  }
+  updateNowPlayingUI(t);
 }
 
 function nextIdx(delta) {
@@ -410,21 +443,36 @@ function playNext(auto = false) {
 }
 
 function playPrev() {
-  if (audio.currentTime > 3) { audio.currentTime = 0; return; }
+  const cur = state.mode === 'engine' && engine ? engine.currentTime : audio.currentTime;
+  if (cur > 3) {
+    if (state.mode === 'engine' && engine) engine.seek(0);
+    else audio.currentTime = 0;
+    return;
+  }
   let idx = state.queueIdx - 1;
   if (idx < 0) idx = state.repeat === 'all' ? state.queue.length - 1 : 0;
   state.queueIdx = idx;
   if (state.queue[idx]) playTrack(state.queue[idx]);
 }
 
+function isPaused() {
+  return state.mode === 'engine' && engine ? engine.paused : audio.paused;
+}
+
 function togglePlay() {
-  if (!audio.src) return;
-  if (audio.paused) audio.play().catch(() => {});
-  else audio.pause();
+  if (state.mode === 'engine' && engine) {
+    if (!engine.playingTrack) return;
+    engine.toggle();
+    updatePlayButton();
+  } else {
+    if (!audio.src) return;
+    if (audio.paused) audio.play().catch(() => {});
+    else audio.pause();
+  }
 }
 
 function updatePlayButton() {
-  $('#btn-play').textContent = audio.paused ? '▶' : '⏸';
+  $('#btn-play').textContent = isPaused() ? '▶' : '⏸';
 }
 
 function updateMediaSession(t) {
@@ -441,9 +489,50 @@ function updateMediaSession(t) {
   navigator.mediaSession.setActionHandler('nexttrack', () => playNext());
 }
 
+// ---- エンジンのコールバック (ギャップレス自動連結・進行表示) ---------------
+
+if (engine) {
+  engine.setNormalization(state.normalize);
+  engine.nextProvider = () => {
+    if (state.repeat === 'one') return state.playing;
+    let idx = nextIdx(1);
+    if (idx >= state.queue.length) {
+      if (state.repeat !== 'all') return null;
+      idx = 0;
+    }
+    return state.queue[idx] ?? null;
+  };
+  engine.ontrackstart = (t, { auto }) => {
+    if (!auto) return; // 手動再生は playTrack 側で UI 更新済み
+    state.playing = t;
+    state.transcoding = false;
+    const idx = state.queue.indexOf(t);
+    if (idx !== -1) state.queueIdx = idx;
+    updateNowPlayingUI(t);
+  };
+  engine.onqueueend = () => updatePlayButton();
+
+  setInterval(() => {
+    if (state.mode !== 'engine' || !engine.playingTrack) return;
+    const dur = engine.duration;
+    $('#time-cur').textContent = fmtTime(engine.currentTime);
+    $('#time-total').textContent = fmtTime(dur);
+    if (dur > 0 && !seekDragging) {
+      $('#seekbar').value = Math.round((engine.currentTime / dur) * 1000);
+    }
+    if ('mediaSession' in navigator && 'setPositionState' in navigator.mediaSession) {
+      try {
+        navigator.mediaSession.setPositionState(
+          { duration: dur, position: Math.min(engine.currentTime, dur) });
+      } catch { /* ignore */ }
+    }
+  }, 250);
+}
+
 // ---- プレーヤ UI イベント -------------------------------------------------
 
 audio.addEventListener('timeupdate', () => {
+  if (state.mode !== 'element') return;
   const dur = isFinite(audio.duration) ? audio.duration : state.playing?.duration;
   $('#time-cur').textContent = fmtTime(audio.currentTime);
   $('#time-total').textContent = fmtTime(dur);
@@ -452,6 +541,7 @@ audio.addEventListener('timeupdate', () => {
   }
 });
 audio.addEventListener('ended', () => {
+  if (state.mode !== 'element') return;
   if (state.repeat === 'one') {
     audio.currentTime = 0;
     audio.play().catch(() => {});
@@ -472,8 +562,13 @@ let seekDragging = false;
 const seekbar = $('#seekbar');
 seekbar.addEventListener('input', () => { seekDragging = true; });
 seekbar.addEventListener('change', () => {
-  const dur = isFinite(audio.duration) ? audio.duration : state.playing?.duration;
-  if (dur > 0) audio.currentTime = (seekbar.value / 1000) * dur;
+  if (state.mode === 'engine' && engine) {
+    const dur = engine.duration;
+    if (dur > 0) engine.seek((seekbar.value / 1000) * dur);
+  } else {
+    const dur = isFinite(audio.duration) ? audio.duration : state.playing?.duration;
+    if (dur > 0) audio.currentTime = (seekbar.value / 1000) * dur;
+  }
   seekDragging = false;
 });
 
@@ -493,10 +588,26 @@ $('#btn-repeat').addEventListener('click', function () {
 const volbar = $('#volbar');
 volbar.value = localStorage.getItem('macca-volume') ?? 100;
 audio.volume = volbar.value / 100;
+engine?.setVolume(volbar.value / 100);
 volbar.addEventListener('input', () => {
   audio.volume = volbar.value / 100;
+  engine?.setVolume(volbar.value / 100);
   localStorage.setItem('macca-volume', volbar.value);
 });
+
+const normBtn = $('#btn-norm');
+if (engine) {
+  normBtn.classList.toggle('on', state.normalize);
+  normBtn.addEventListener('click', () => {
+    state.normalize = !state.normalize;
+    engine.setNormalization(state.normalize);
+    normBtn.classList.toggle('on', state.normalize);
+    localStorage.setItem('macca-normalize', state.normalize ? '1' : '0');
+    toast(state.normalize ? '音量正規化: オン (曲間の音量差を揃えます)' : '音量正規化: オフ');
+  });
+} else {
+  normBtn.hidden = true;
+}
 
 document.addEventListener('keydown', (e) => {
   if (e.target.tagName === 'INPUT') return;

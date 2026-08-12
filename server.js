@@ -28,6 +28,7 @@ const STATIC_TYPES = {
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
   '.ico': 'image/x-icon',
+  '.wasm': 'application/wasm',
 };
 
 const COVER_NAMES = /^(cover|folder|front|album|jacket|artwork)\.(jpe?g|png)$/i;
@@ -86,6 +87,34 @@ function detectFfmpeg() {
   return new Promise((resolve) => {
     execFile('ffmpeg', ['-version'], (err) => resolve(!err));
   });
+}
+
+/**
+ * iTunes / ミュージック.app の標準メディアフォルダ候補 (優先順)。
+ * macOS と Windows のどちらのホームディレクトリ構成でも動く。
+ */
+export function defaultLibraryCandidates(home) {
+  return [
+    ['Music', 'Music', 'Media.localized', 'Music'], // macOS ミュージック.app (Catalina 以降)
+    ['Music', 'Music', 'Media.localized'],
+    ['Music', 'Apple Music', 'Media'],              // Windows 版 Apple Music アプリ
+    ['Music', 'iTunes', 'iTunes Media', 'Music'],   // iTunes (Windows / 旧 macOS)
+    ['Music', 'iTunes', 'iTunes Media'],
+    ['Music', 'iTunes', 'iTunes Music'],            // さらに古い iTunes
+    ['Music'],                                      // フォールバック: ミュージックフォルダ
+  ].map((parts) => path.join(home, ...parts));
+}
+
+/** ディレクトリ未指定時に iTunes / ミュージックのライブラリを自動検出する */
+async function findDefaultLibrary() {
+  for (const dir of defaultLibraryCandidates(os.homedir())) {
+    try {
+      if ((await stat(dir)).isDirectory()) return dir;
+    } catch {
+      // 次の候補へ
+    }
+  }
+  return null;
 }
 
 // ---- レスポンスヘルパ -----------------------------------------------------
@@ -325,10 +354,20 @@ const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPat
 if (isMain) {
   const opts = parseArgs(process.argv.slice(2));
   if (opts.help) {
-    console.log('使い方: node server.js <音楽ディレクトリ> [--port 8323] [--host 127.0.0.1] [--no-cache]');
+    console.log('使い方: node server.js [音楽ディレクトリ] [--port 8323] [--host 127.0.0.1] [--no-cache]');
+    console.log('ディレクトリを省略すると iTunes / ミュージックのライブラリを自動検出します。');
     process.exit(0);
   }
-  const dir = opts.dir ?? path.join(os.homedir(), 'Music');
+  let dir = opts.dir;
+  if (!dir) {
+    dir = await findDefaultLibrary();
+    if (!dir) {
+      console.error('エラー: iTunes / ミュージックのライブラリが見つかりませんでした。');
+      console.error('使い方: node server.js <音楽ディレクトリ> [--port 8323]');
+      process.exit(1);
+    }
+    console.log(`ディレクトリ未指定のため自動検出: ${dir}`);
+  }
   try {
     const st = await stat(dir);
     if (!st.isDirectory()) throw new Error();

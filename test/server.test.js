@@ -4,7 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { writeFixtures } from './fixtures.js';
-import { createServer } from '../server.js';
+import { createServer, defaultLibraryCandidates } from '../server.js';
 
 let dir;
 let server;
@@ -76,4 +76,14 @@ test('存在しない ID は 404', async () => {
 test('パストラバーサルは静的配信で拒否される', async () => {
   const res = await fetch(`${base}/..%2f..%2fserver.js`);
   assert.equal(res.status, 404);
+});
+
+test('defaultLibraryCandidates: iTunes / ミュージックの標準パスを優先順に返す', () => {
+  const home = path.join(path.sep, 'home', 'x');
+  const cands = defaultLibraryCandidates(home);
+  const rel = cands.map((c) => path.relative(home, c).split(path.sep).join('/'));
+  assert.equal(rel[0], 'Music/Music/Media.localized/Music', 'macOS ミュージック.app が最優先');
+  assert.ok(rel.includes('Music/iTunes/iTunes Media/Music'), 'Windows / 旧 macOS の iTunes');
+  assert.ok(rel.includes('Music/Apple Music/Media'), 'Windows 版 Apple Music');
+  assert.equal(rel.at(-1), 'Music', '最後のフォールバックはミュージックフォルダ');
 });

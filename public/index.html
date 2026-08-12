@@ -53,6 +53,7 @@
     </div>
   </div>
   <div class="volume">
+    <button id="btn-norm" title="音量正規化 (曲間の音量差を揃える)">N</button>
     <span>🔊</span>
     <input id="volbar" type="range" min="0" max="100" value="100">
   </div>
@@ -60,6 +61,6 @@
 
 <audio id="audio" preload="auto"></audio>
 <div id="toast" hidden></div>
-<script src="/app.js"></script>
+<script type="module" src="/app.js"></script>
 </body>
 </html>

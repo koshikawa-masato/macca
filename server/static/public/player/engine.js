@@ -107,6 +107,9 @@ export class AudioEngine {
 
   seek(seconds) {
     if (!this.current || !this.ctx) return;
+    // シークは「ここから聴きたい」という操作なので、一時停止中や
+    // OS にコンテキストを止められた状態からでも必ず音が出るよう復帰させる
+    this.kickContext();
     const cur = this.current;
     const offset = Math.min(Math.max(seconds, 0), cur.buffer.duration - 0.05);
     this._cancelSource(cur.source);
@@ -317,7 +320,12 @@ export class AudioEngine {
     if (this.next?.source) {
       this._cancelSource(this.next.source);
       this.next.source = null;
-      if (this.next.entry) this.next.entry.source = null;
+      if (this.next.entry) {
+        // 再スケジュール時に作り直すので、接続済みゲインノードも外す (リーク防止)
+        try { this.next.entry.gainNode?.disconnect(); } catch { /* ignore */ }
+        this.next.entry.gainNode = null;
+        this.next.entry.source = null;
+      }
     }
   }
 

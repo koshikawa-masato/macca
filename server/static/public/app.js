@@ -600,9 +600,14 @@ seekbar.addEventListener('change', () => {
     if (dur > 0) engine.seek((seekbar.value / 1000) * dur);
   } else {
     const dur = isFinite(audio.duration) ? audio.duration : state.playing?.duration;
-    if (dur > 0) audio.currentTime = (seekbar.value / 1000) * dur;
+    if (dur > 0) {
+      audio.currentTime = (seekbar.value / 1000) * dur;
+      // シークは再生意図とみなす (エンジン側と同じ挙動)
+      if (audio.paused) audio.play().catch(() => {});
+    }
   }
   seekDragging = false;
+  updatePlayButton();
 });
 
 $('#btn-play').addEventListener('click', togglePlay);

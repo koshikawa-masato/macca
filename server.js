@@ -45,10 +45,19 @@ function parseArgs(argv) {
     else if (a === '--host') opts.host = argv[++i];
     else if (a === '--source') opts.sources.push(argv[++i]);
     else if (a === '--no-cache') opts.cache = false;
+    else if (a === '--open') opts.open = true;
     else if (a === '--help' || a === '-h') opts.help = true;
     else if (!a.startsWith('-') && !opts.dir) opts.dir = a;
   }
   return opts;
+}
+
+/** 既定ブラウザで URL を開く (macOS / Windows / Linux) */
+function openBrowser(url) {
+  const cmd = process.platform === 'darwin' ? ['open', url]
+    : process.platform === 'win32' ? ['cmd', '/c', 'start', '', url]
+    : ['xdg-open', url];
+  spawn(cmd[0], cmd.slice(1), { stdio: 'ignore', detached: true }).unref();
 }
 
 // ---- ライブラリ状態 -------------------------------------------------------
@@ -514,10 +523,12 @@ if (isMain) {
 
   const server = await createServer(dir, { useCache: opts.cache, extraSources: opts.sources });
   server.listen(opts.port, opts.host, () => {
+    const url = `http://${opts.host === '0.0.0.0' ? '127.0.0.1' : opts.host}:${opts.port}/`;
     console.log('');
-    console.log(`  macca 起動: http://${opts.host}:${opts.port}/`);
+    console.log(`  macca 起動: ${url}`);
     console.log(`  ライブラリ: ${path.resolve(dir)}`);
     console.log(`  ffmpeg: ${state.ffmpeg ? 'あり (非対応形式は WAV に変換して再生)' : 'なし (Safari 以外では ALAC/AIFF が再生できない場合があります)'}`);
     console.log('');
+    if (opts.open) openBrowser(url);
   });
 }

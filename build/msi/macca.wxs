@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- macca の Windows インストーラ定義 (WiX / wixl でビルド)
+     - Program Files\macca に自己完結型の macca.exe を配置
+     - スタートメニューにショートカット (起動時にブラウザが開き、閉じると自動終了)
+     UpgradeCode は固定なので、新バージョンの MSI を入れると上書き更新される -->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*"
+           Name="macca"
+           Language="1041"
+           Version="0.1.0"
+           Manufacturer="macca project"
+           UpgradeCode="6EF4C3E1-E246-4D06-A1E3-A29560D17B89">
+    <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine"
+             Description="macca — ローカル音楽ライブラリ" />
+    <MajorUpgrade AllowSameVersionUpgrades="yes"
+                  DowngradeErrorMessage="新しいバージョンの macca が既にインストールされています。" />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Icon Id="MaccaIcon" SourceFile="macca.ico" />
+    <Property Id="ARPPRODUCTICON" Value="MaccaIcon" />
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="INSTALLDIR" Name="macca">
+          <Component Id="MainExecutable" Guid="7D30E3C8-D0A7-40C2-ABC8-7CA8EBAA1658" Win64="yes">
+            <File Id="MaccaExe" Name="macca.exe" Source="macca.exe" KeyPath="yes" />
+          </Component>
+        </Directory>
+      </Directory>
+      <Directory Id="ProgramMenuFolder">
+        <Directory Id="MaccaMenuFolder" Name="macca">
+          <Component Id="StartMenuShortcut" Guid="A45D24C1-93B8-4E5A-9C0F-2E7D30A6B411" Win64="yes">
+            <Shortcut Id="MaccaShortcut"
+                      Name="macca"
+                      Description="ローカル音楽ライブラリ (ブラウザを閉じると終了します)"
+                      Target="[INSTALLDIR]macca.exe"
+                      Arguments="--open --exit-on-close"
+                      WorkingDirectory="INSTALLDIR"
+                      Icon="MaccaIcon" />
+            <RemoveFolder Id="RemoveMaccaMenuFolder" On="uninstall" />
+            <RegistryValue Root="HKCU" Key="Software\macca" Name="installed"
+                           Type="integer" Value="1" KeyPath="yes" />
+          </Component>
+        </Directory>
+      </Directory>
+    </Directory>
+
+    <Feature Id="Main" Level="1">
+      <ComponentRef Id="MainExecutable" />
+      <ComponentRef Id="StartMenuShortcut" />
+    </Feature>
+  </Product>
+</Wix>

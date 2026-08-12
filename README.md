@@ -90,7 +90,18 @@ DMG は `./build/dmg/build.sh` で生成できます。以下はソースから�
 3. ブラウザが自動で開きます。ミュージック.app のライブラリ
    （`~/Music/Music/Media.localized/Music`）を自動検出します
 
-### Windows
+### Windows（いちばん簡単: MSI）
+
+1. [Releases](https://github.com/koshikawa-masato/macca/releases) から `macca.msi` をダウンロード
+2. ダブルクリックしてインストール（Node.js のインストールは**不要**。
+   サーバ本体を同梱した自己完結アプリです）
+   - SmartScreen の警告が出た場合は「詳細情報」→「実行」（初回のみ）
+3. **スタートメニューの「macca」**から起動するとブラウザが開きます。
+   コンソールは表示されず、ブラウザを閉じると自動終了します
+
+MSI は macOS/Linux 上でも `./build/msi/build.sh`（要 [msitools](https://gitlab.gnome.org/GNOME/msitools)）で生成できます。
+
+### Windows（ソースから）
 
 1. [nodejs.org](https://nodejs.org/ja) から LTS 版のインストーラをダウンロードして実行
    （`winget install OpenJS.NodeJS.LTS` でも可）

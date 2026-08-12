@@ -739,9 +739,14 @@ async function updateDebugPanel() {
   const panel = $('#debug-panel');
   const lines = [];
   try {
-    const st = await (await fetch('/api/stats')).json();
-    const cpu = st.cpu >= 0 ? `${st.cpu.toFixed(1)}%` : '—';
-    lines.push(`サーバ: ${(st.rss / 1048576).toFixed(1)} MB · CPU ${cpu}`);
+    const res = await fetch('/api/stats');
+    const st = res.ok ? await res.json() : null;
+    if (typeof st?.rss !== 'number') {
+      lines.push('サーバ: 旧バージョンです (アプリを再起動すると表示されます)');
+    } else {
+      const cpu = st.cpu >= 0 ? `${st.cpu.toFixed(1)}%` : '—';
+      lines.push(`サーバ: ${(st.rss / 1048576).toFixed(1)} MB · CPU ${cpu}`);
+    }
   } catch {
     lines.push('サーバ: 取得失敗');
   }

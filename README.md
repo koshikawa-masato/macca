@@ -51,6 +51,52 @@ node server.js
 ウィンドウを閉じると macca は終了します。よく使うなら Dock やタスクバーに
 ピン留めしておくと 1 クリックで起動できます。
 
+## 導入ガイド（OS 別）
+
+必要なのは Node.js 18 以上と、このリポジトリのファイル一式だけです。
+`npm install` は不要です。リポジトリの取得は各 OS 共通で次のどちらか:
+
+- **git**: `git clone https://github.com/koshikawa-masato/macca.git`
+- **zip**: GitHub の「Code」→「Download ZIP」→ 好きな場所に展開
+
+### macOS
+
+1. Node.js を入れる（どちらでも）
+   - [nodejs.org](https://nodejs.org/ja) から LTS 版のインストーラをダウンロードして実行
+   - Homebrew 派なら `brew install node`
+2. リポジトリを取得して、フォルダ内の **`macca.command` をダブルクリック**
+   - zip で取得した場合、初回のみ「開発元を確認できません」と出ることがあります。
+     その場合は `macca.command` を**右クリック →「開く」**（初回のみ。以降はダブルクリックで OK）
+3. ブラウザが自動で開きます。ミュージック.app のライブラリ
+   （`~/Music/Music/Media.localized/Music`）を自動検出します
+
+### Windows
+
+1. [nodejs.org](https://nodejs.org/ja) から LTS 版のインストーラをダウンロードして実行
+   （`winget install OpenJS.NodeJS.LTS` でも可）
+2. リポジトリを取得して、フォルダ内の **`macca.bat` をダブルクリック**
+   - SmartScreen の警告が出た場合は「詳細情報」→「実行」（初回のみ）
+3. ブラウザが自動で開きます。iTunes のライブラリ
+   （`ミュージック\iTunes\iTunes Media`）を自動検出します
+
+### Linux
+
+1. Node.js 18 以上を入れる
+   - Ubuntu / Debian: `sudo apt install nodejs` （`node -v` が 18 未満なら
+     [NodeSource](https://github.com/nodesource/distributions) か [nvm](https://github.com/nvm-sh/nvm) で新しい版を）
+   - Fedora: `sudo dnf install nodejs` / Arch: `sudo pacman -S nodejs`
+2. リポジトリを取得して、**`./macca.sh` を実行**
+   （ファイルマネージャから実行する場合は「プログラムとして実行」を選択）
+3. ブラウザが自動で開きます。`~/Music` を自動検出します
+   （別の場所なら `./macca.sh ~/音楽のフォルダ` のように指定）
+
+### うまく動かないとき
+
+- `node -v` が 18 以上か確認してください
+- ポート 8323 が使用中の場合は `--port 8080` のように変えられます
+  （ランチャーにも引数を渡せます: `./macca.sh --port 8080`）
+- 音楽フォルダが標準の場所にない場合は、引数でフォルダを直接指定してください
+
 ```
 使い方: node server.js [音楽ディレクトリ] [--port 8323] [--host 127.0.0.1] [--no-cache]
 ```

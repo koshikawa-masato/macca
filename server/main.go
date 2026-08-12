@@ -344,7 +344,33 @@ func newState(opts options) (*appState, error) {
 	if err := state.rescan(opts.cache); err != nil {
 		return nil, err
 	}
+	go state.keepRemovableAwake()
 	return state, nil
+}
+
+// リムーバブルソース (SD カード等) を使用中はスリープさせない。
+// macOS 等は無アクセスが続く外部ディスクを止めるため、次の曲の再生開始が
+// ドライブの起床待ち (数秒) になる。5 分ごとに数 KB 読んで防ぐ。
+func (s *appState) keepRemovableAwake() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	buf := make([]byte, 4096)
+	for range ticker.C {
+		s.mu.RLock()
+		var paths []string
+		for _, src := range s.sources {
+			if src.Removable && len(src.Tracks) > 0 {
+				paths = append(paths, filepath.Join(src.Dir, src.Tracks[0].Path))
+			}
+		}
+		s.mu.RUnlock()
+		for _, p := range paths {
+			if f, err := os.Open(p); err == nil {
+				_, _ = f.Read(buf)
+				_ = f.Close()
+			}
+		}
+	}
 }
 
 func resolvePublicDir(flagValue string) string {

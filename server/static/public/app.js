@@ -593,6 +593,14 @@ audio.addEventListener('ended', () => {
 });
 audio.addEventListener('play', updatePlayButton);
 audio.addEventListener('pause', updatePlayButton);
+// バッファ待ち (SDの起床待ち等) を「…」で見えるようにする
+audio.addEventListener('waiting', () => {
+  if (state.mode === 'element') { state.loading = true; updatePlayButton(); }
+});
+audio.addEventListener('playing', () => {
+  state.loading = false;
+  updatePlayButton();
+});
 audio.addEventListener('error', () => {
   if (!audio.src) return;
   const t = state.playing;

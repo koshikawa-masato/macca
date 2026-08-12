@@ -82,8 +82,22 @@ Windows 版 Apple Music → iTunes `~/Music/iTunes/iTunes Media` → `~/Music`�
 - **USB / SD カードのスキャン** — サイドバーの「デバイス」に接続中のリムーバブルストレージ
   （USB メモリ、SD カード、マスストレージ接続のポータブルオーディオ）が表示され、
   ワンクリックでライブラリに統合できます。取り外してもファイルには一切触れません
-  （macOS は `/Volumes`、Windows はドライブレター、Linux は `/media` を監視。
-  MTP 接続のみのデバイスは OS からフォルダとして見えないため対象外）
+  （macOS は `/Volumes`、Windows はドライブレター、Linux は `/media` と gvfs を監視）
+- **追加ライブラリフォルダ** — `--source <dir>`（複数指定可）で NAS のマウント先などを
+  メインライブラリと併せて配信できます
+
+### MTP 接続のデバイス（Android スマホ・一部の DAP）について
+
+MTP はファイルシステムではないため、OS がフォルダとして見せてくれる場合のみ扱えます:
+
+- **Linux** — GNOME 等のファイラでデバイスを開くと gvfs が FUSE マウントするので、
+  そのまま「デバイス」に `MTP: 内部共有ストレージ` などとして現れます
+- **macOS / Windows** — OS 標準では MTP をフォルダとして見せる仕組みがありません。
+  現実的な選択肢は次の 3 つです:
+  1. デバイス側を **USB ストレージモード**に切り替える（FiiO などの DAP は大抵設定にあります）
+  2. SD カードを抜いてカードリーダーで挿す
+  3. [OpenMTP](https://openmtp.ganeshrvel.com/) (macOS) や go-mtpfs でフォルダにマウントし、
+     `--source` で追加する
 
 ### 対応メタデータ
 

@@ -38,11 +38,12 @@ const COVER_NAMES = /^(cover|folder|front|album|jacket|artwork)\.(jpe?g|png)$/i;
 // ---- CLI 引数 -------------------------------------------------------------
 
 function parseArgs(argv) {
-  const opts = { dir: null, port: 8323, host: '127.0.0.1', cache: true };
+  const opts = { dir: null, port: 8323, host: '127.0.0.1', cache: true, sources: [] };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--port') opts.port = Number(argv[++i]);
     else if (a === '--host') opts.host = argv[++i];
+    else if (a === '--source') opts.sources.push(argv[++i]);
     else if (a === '--no-cache') opts.cache = false;
     else if (a === '--help' || a === '-h') opts.help = true;
     else if (!a.startsWith('-') && !opts.dir) opts.dir = a;
@@ -418,7 +419,7 @@ async function serveArtwork(res, track) {
 
 // ---- サーバ起動 -----------------------------------------------------------
 
-export async function createServer(rootDir, { useCache = true, deviceLister } = {}) {
+export async function createServer(rootDir, { useCache = true, deviceLister, extraSources = [] } = {}) {
   state.rootDir = path.resolve(rootDir);
   if (deviceLister) state.deviceLister = deviceLister;
   state.ffmpeg = await detectFfmpeg();
@@ -428,6 +429,16 @@ export async function createServer(rootDir, { useCache = true, deviceLister } = 
     label: 'ライブラリ', removable: false, tracks: [], errors: [],
   };
   state.sources.set(primary.id, primary);
+  // --source で明示追加されたフォルダ (MTP の FUSE マウント先や NAS など)
+  for (const dir of extraSources) {
+    const resolved = path.resolve(dir);
+    const id = sourceId(resolved);
+    if (state.sources.has(id)) continue;
+    state.sources.set(id, {
+      id, dir: resolved, label: path.basename(resolved) || resolved,
+      removable: false, tracks: [], errors: [],
+    });
+  }
   await rescan(useCache);
 
   const server = http.createServer(async (req, res) => {
@@ -475,8 +486,9 @@ const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPat
 if (isMain) {
   const opts = parseArgs(process.argv.slice(2));
   if (opts.help) {
-    console.log('使い方: node server.js [音楽ディレクトリ] [--port 8323] [--host 127.0.0.1] [--no-cache]');
+    console.log('使い方: node server.js [音楽ディレクトリ] [--port 8323] [--host 127.0.0.1] [--source <dir>]... [--no-cache]');
     console.log('ディレクトリを省略すると iTunes / ミュージックのライブラリを自動検出します。');
+    console.log('--source は追加のライブラリフォルダ (MTP の FUSE マウント先や NAS など)。複数指定可。');
     process.exit(0);
   }
   let dir = opts.dir;
@@ -498,7 +510,7 @@ if (isMain) {
     process.exit(1);
   }
 
-  const server = await createServer(dir, { useCache: opts.cache });
+  const server = await createServer(dir, { useCache: opts.cache, extraSources: opts.sources });
   server.listen(opts.port, opts.host, () => {
     console.log('');
     console.log(`  macca 起動: http://${opts.host}:${opts.port}/`);

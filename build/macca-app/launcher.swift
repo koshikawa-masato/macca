@@ -21,10 +21,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   }
 
   func findServerCommand() -> (String, [String])? {
+    // 1) DMG 配布用: バンドル内に同梱されたサーババイナリ (自己完結型)
+    if let res = Bundle.main.resourcePath {
+      let bundled = res + "/macca-server"
+      if FileManager.default.isExecutableFile(atPath: bundled) {
+        return (bundled, ["--open", "--exit-on-close"])
+      }
+    }
+    // 2) リポジトリ直下の Go バイナリ
     let bin = rootDir + "/macca"
     if FileManager.default.isExecutableFile(atPath: bin) {
       return (bin, ["--open", "--exit-on-close"])
     }
+    // 3) Node.js 版
     for node in ["/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node",
                  "/opt/homebrew/opt/node/bin/node"] {
       if FileManager.default.isExecutableFile(atPath: node) {

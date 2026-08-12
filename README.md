@@ -68,7 +68,18 @@ node server.js
 - **git**: `git clone https://github.com/koshikawa-masato/macca.git`
 - **zip**: GitHub の「Code」→「Download ZIP」→ 好きな場所に展開
 
-### macOS
+### macOS（いちばん簡単: DMG）
+
+1. [Releases](https://github.com/koshikawa-masato/macca/releases) から `macca.dmg` をダウンロード
+2. ダブルクリックで開き、**macca のアイコンを Applications フォルダへドラッグ**
+3. アプリケーションから macca を起動（Node.js のインストールは**不要**。
+   サーバ本体を同梱した自己完結アプリです）
+   - 初回のみ「開発元を確認できません」と出た場合は、macca を**右クリック →「開く」**
+     （または システム設定 → プライバシーとセキュリティ →「このまま開く」）
+
+DMG は `./build/dmg/build.sh` で生成できます。以下はソースから動かす場合の手順です。
+
+### macOS（ソースから）
 
 1. Node.js を入れる（どちらでも）
    - [nodejs.org](https://nodejs.org/ja) から LTS 版のインストーラをダウンロードして実行

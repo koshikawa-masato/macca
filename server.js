@@ -80,8 +80,10 @@ function rebuildIndex() {
 async function scanSource(src, useCache = true) {
   console.log(`スキャン中: ${src.dir}`);
   const t0 = Date.now();
+  // リムーバブルデバイスはディスクにキャッシュを残さない (プライバシー配慮:
+  // 抜いた後のデバイスの中身の記録が Mac 側に残らないようにする)
   const { tracks, errors } = await scanLibrary(src.dir, {
-    useCache,
+    useCache: useCache && !src.removable,
     onProgress: (done, total) => console.log(`  ... ${done}/${total}`),
   });
   src.tracks = tracks.map((t) => ({ ...t, src: src.id }));

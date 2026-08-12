@@ -777,4 +777,8 @@ function applyLibrary(data) {
   }
   refreshDevices();
   setInterval(refreshDevices, 10000); // 抜き差しを 10 秒ごとに反映
+
+  // ページが開いている間サーバに接続を張る (--exit-on-close 起動時、
+  // 全ページが閉じられたらサーバが自動終了するための生存信号)
+  if (typeof EventSource !== 'undefined') new EventSource('/api/presence');
 })();

@@ -161,7 +161,14 @@ localhost サーバのメモリ・CPU 負荷を最大限下げる。あわせて
 1. **受け入れテスト（言語非依存・最重要）**: 既存の `test/*.test.js` は HTTP レベルの
    検証なので、環境変数 `MACCA_SERVER_BIN=<goバイナリ>` があるとき Node の
    `createServer` の代わりに Go バイナリを子プロセス起動して同じテストを流す
-   ハーネスを追加する。**全テストがそのままパスすること = API 互換の定義**
+   ハーネス（`test/go-harness.js`、実装済み）を使う。
+   **全テストがそのままパスすること = API 互換の定義**
+   - ハーネス契約: 引数 `<dir> --port 0 --host 127.0.0.1 --no-cache [--source d]...`
+   - **`--port 0` 対応必須**: OS 割り当てポートで listen し、実際のポートを
+     `macca 起動: http://127.0.0.1:<port>/` 形式で stdout に出力すること
+   - **`MACCA_TEST_DEVICES` 環境変数**: `[{"path":"…","label":"…"}]` 形式の JSON が
+     設定されていたら、実デバイス検出の代わりにこれをデバイス一覧として使う（テスト専用）
+   - 終了は SIGTERM で行う（クリーンに終了すること）
 2. **パーサのパリティテスト**: 同一フィクスチャ（`test/fixtures.js` 生成物 +
    `test/data/alac-sine.m4a`）に対し、Go 版の出力メタデータ JSON が Node 版と
    完全一致することを確認するスクリプト

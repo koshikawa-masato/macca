@@ -8,6 +8,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { buildWav } from './fixtures.js';
+import { startExternalServer } from './go-harness.js';
 import { createServer } from '../server.js';
 
 let dir1;
@@ -22,17 +23,26 @@ before(async () => {
     buildWav({ title: 'メイン曲', artist: 'A', album: 'X' }));
   await writeFile(path.join(dir2, 'extra.wav'),
     buildWav({ title: '追加ソース曲', artist: 'B', album: 'Y' }));
-  server = await createServer(dir1, {
-    useCache: false,
-    extraSources: [dir2],
-    deviceLister: async () => [],
-  });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  base = `http://127.0.0.1:${server.address().port}`;
+  const external = await startExternalServer(dir1, { sources: [dir2] });
+  if (external) {
+    server = external;
+    base = external.base;
+  } else {
+    server = await createServer(dir1, {
+      useCache: false,
+      extraSources: [dir2],
+      deviceLister: async () => [],
+    });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    base = `http://127.0.0.1:${server.address().port}`;
+  }
 });
 
 after(async () => {
-  await new Promise((resolve) => server.close(resolve));
+  if (server) {
+    if (process.env.MACCA_SERVER_BIN) await server.close();
+    else await new Promise((resolve) => server.close(resolve));
+  }
   await rm(dir1, { recursive: true, force: true });
   await rm(dir2, { recursive: true, force: true });
 });

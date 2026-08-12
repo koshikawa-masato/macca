@@ -46,6 +46,7 @@ function parseArgs(argv) {
     else if (a === '--source') opts.sources.push(argv[++i]);
     else if (a === '--no-cache') opts.cache = false;
     else if (a === '--open') opts.open = true;
+    else if (a === '--exit-on-close') opts.exitOnClose = true;
     else if (a === '--help' || a === '-h') opts.help = true;
     else if (!a.startsWith('-') && !opts.dir) opts.dir = a;
   }
@@ -233,6 +234,37 @@ function serveLibrary(res) {
     ffmpeg: state.ffmpeg,
     errors: sources.reduce((n, s) => n + s.errors, 0),
     tracks,
+  });
+}
+
+// ---- ブラウザ接続の監視 (--exit-on-close) ----------------------------------
+// フロントが張る SSE 接続で「開いているページ数」を数え、全ページが閉じて
+// 猶予時間が過ぎたらプロセスを終了する (ワンクリック起動のアプリ的な挙動)。
+
+const presence = { clients: 0, exitTimer: null };
+const EXIT_GRACE_MS = 8000; // リロード・画面遷移で誤終了しないための猶予
+
+function servePresence(req, res, exitOnClose) {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-store',
+    'Connection': 'keep-alive',
+  });
+  res.write('retry: 3000\n\n');
+  presence.clients++;
+  clearTimeout(presence.exitTimer);
+  const keepalive = setInterval(() => res.write(': ping\n\n'), 25000);
+  req.on('close', () => {
+    clearInterval(keepalive);
+    presence.clients--;
+    if (!exitOnClose || presence.clients > 0) return;
+    clearTimeout(presence.exitTimer);
+    presence.exitTimer = setTimeout(() => {
+      if (presence.clients <= 0) {
+        console.log('ブラウザが閉じられたため macca を終了します');
+        process.exit(0);
+      }
+    }, EXIT_GRACE_MS);
   });
 }
 
@@ -430,7 +462,7 @@ async function serveArtwork(res, track) {
 
 // ---- サーバ起動 -----------------------------------------------------------
 
-export async function createServer(rootDir, { useCache = true, deviceLister, extraSources = [] } = {}) {
+export async function createServer(rootDir, { useCache = true, deviceLister, extraSources = [], exitOnClose = false } = {}) {
   state.rootDir = path.resolve(rootDir);
   if (deviceLister) state.deviceLister = deviceLister;
   state.ffmpeg = await detectFfmpeg();
@@ -462,6 +494,7 @@ export async function createServer(rootDir, { useCache = true, deviceLister, ext
         await rescan(useCache);
         return serveLibrary(res);
       }
+      if (p === '/api/presence') return servePresence(req, res, exitOnClose);
       if (p === '/api/devices') return serveDevices(res);
       if (p === '/api/source' && req.method === 'POST') {
         return addDeviceSource(req, res, useCache);
@@ -521,9 +554,29 @@ if (isMain) {
     process.exit(1);
   }
 
-  const server = await createServer(dir, { useCache: opts.cache, extraSources: opts.sources });
-  server.listen(opts.port, opts.host, () => {
-    const url = `http://${opts.host === '0.0.0.0' ? '127.0.0.1' : opts.host}:${opts.port}/`;
+  const server = await createServer(dir, {
+    useCache: opts.cache,
+    extraSources: opts.sources,
+    exitOnClose: opts.exitOnClose,
+  });
+
+  // ランチャー起動 (--exit-on-close) では重複起動を許す:
+  // ポートが使用中なら次のポートへずらして新しいインスタンスを立てる
+  let port = opts.port;
+  let retries = opts.exitOnClose ? 20 : 0;
+  const onError = (err) => {
+    if (err.code === 'EADDRINUSE' && retries-- > 0) {
+      port++;
+      server.listen(port, opts.host);
+      return;
+    }
+    console.error(`エラー: ポート ${port} で待ち受けできません (${err.code})`);
+    process.exit(1);
+  };
+  server.on('error', onError);
+  server.once('listening', () => {
+    server.removeListener('error', onError);
+    const url = `http://${opts.host === '0.0.0.0' ? '127.0.0.1' : opts.host}:${port}/`;
     console.log('');
     console.log(`  macca 起動: ${url}`);
     console.log(`  ライブラリ: ${path.resolve(dir)}`);
@@ -531,4 +584,5 @@ if (isMain) {
     console.log('');
     if (opts.open) openBrowser(url);
   });
+  server.listen(port, opts.host);
 }

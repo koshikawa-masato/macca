@@ -4,6 +4,7 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { writeFixtures, buildWav } from './fixtures.js';
+import { startExternalServer } from './go-harness.js';
 import { createServer, defaultLibraryCandidates } from '../server.js';
 
 let dir;
@@ -19,16 +20,27 @@ before(async () => {
   await mkdir(path.join(deviceDir, 'MUSIC'), { recursive: true });
   await writeFile(path.join(deviceDir, 'MUSIC', 'ポータブル曲.wav'),
     buildWav({ title: 'ポータブル曲', artist: 'DAP', album: 'SD' }));
-  server = await createServer(dir, {
-    useCache: false,
-    deviceLister: async () => [{ path: deviceDir, label: 'TEST-USB' }],
+  const external = await startExternalServer(dir, {
+    devices: [{ path: deviceDir, label: 'TEST-USB' }],
   });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  base = `http://127.0.0.1:${server.address().port}`;
+  if (external) {
+    server = external;
+    base = external.base;
+  } else {
+    server = await createServer(dir, {
+      useCache: false,
+      deviceLister: async () => [{ path: deviceDir, label: 'TEST-USB' }],
+    });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    base = `http://127.0.0.1:${server.address().port}`;
+  }
 });
 
 after(async () => {
-  await new Promise((resolve) => server.close(resolve));
+  if (server) {
+    if (process.env.MACCA_SERVER_BIN) await server.close();
+    else await new Promise((resolve) => server.close(resolve));
+  }
   await rm(dir, { recursive: true, force: true });
   await rm(deviceDir, { recursive: true, force: true });
 });

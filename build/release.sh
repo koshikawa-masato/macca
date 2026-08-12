@@ -2,6 +2,8 @@
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
+VERSION=$(git describe --tags --always 2>/dev/null | sed "s/^v//")
+LDFLAGS="-s -w -X github.com/koshikawa-masato/macca/server.Version=${VERSION:-dev}"
 OUT="$ROOT/build/release"
 TMP="${TMPDIR:-/tmp}/macca-release-$$"
 
@@ -18,7 +20,7 @@ build_one() {
   ext=$3
   name="macca-${goos}-${goarch}${ext}"
   echo "building $name"
-  (cd "$ROOT" && CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build -trimpath -ldflags "-s -w" -o "$OUT/$name" ./cmd/macca)
+  (cd "$ROOT" && CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build -trimpath -ldflags "$LDFLAGS" -o "$OUT/$name" ./cmd/macca)
 }
 
 build_one darwin arm64 ""

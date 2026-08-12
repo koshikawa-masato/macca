@@ -12,6 +12,8 @@
 set -eu
 cd "$(dirname "$0")"
 ROOT="$(cd ../.. && pwd)"
+VERSION=$(git describe --tags --always 2>/dev/null | sed "s/^v//")
+LDFLAGS="-s -w -X github.com/koshikawa-masato/macca/server.Version=${VERSION:-dev}"
 OUT="$ROOT/build/release"
 TMP="${TMPDIR:-/tmp}/macca-msi-$$"
 mkdir -p "$OUT" "$TMP"
@@ -19,7 +21,7 @@ trap 'rm -rf "$TMP"' EXIT INT TERM
 
 echo "== 1/3 Windows 用 macca.exe をビルド (public/ 埋め込み・GUI サブシステム)"
 (cd "$ROOT" && CGO_ENABLED=0 GOOS=windows GOARCH=amd64 \
-  go build -trimpath -ldflags "-s -w -H windowsgui" -o "$TMP/macca.exe" ./cmd/macca)
+  go build -trimpath -ldflags "$LDFLAGS -H windowsgui" -o "$TMP/macca.exe" ./cmd/macca)
 
 echo "== 2/3 ショートカット用アイコン (.ico) を生成"
 node "$ROOT/build/msi/make-ico.mjs" \

@@ -9,6 +9,7 @@
 
 import http from 'node:http';
 import { createReadStream } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { open, stat, readdir, readFile } from 'node:fs/promises';
 import { spawn, execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -22,6 +23,15 @@ import { listRemovableVolumes } from './lib/devices.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, 'server', 'static', 'public');
+
+// アプリのバージョン (package.json から。UI 表示用)
+const VERSION = (() => {
+  try {
+    return JSON.parse(readFileSync(path.join(__dirname, 'package.json'), 'utf8')).version ?? '';
+  } catch {
+    return '';
+  }
+})();
 
 const STATIC_TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -229,6 +239,7 @@ function serveLibrary(res) {
   sendJson(res, 200, {
     dir: state.rootDir,
     server: 'node', // サーバ実装の識別 (UI のバッジ表示用)
+    version: VERSION,
     sources,
     scannedAt: state.scannedAt,
     scanning: state.scanning,

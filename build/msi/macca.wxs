@@ -7,7 +7,7 @@
   <Product Id="*"
            Name="macca"
            Language="1041"
-           Version="0.1.1"
+           Version="0.1.2"
            Manufacturer="macca project"
            UpgradeCode="6EF4C3E1-E246-4D06-A1E3-A29560D17B89">
     <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine"

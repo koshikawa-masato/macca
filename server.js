@@ -11,15 +11,17 @@ import http from 'node:http';
 import { createReadStream } from 'node:fs';
 import { open, stat, readdir, readFile } from 'node:fs/promises';
 import { spawn, execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { scanLibrary } from './lib/scan.js';
 import { MIME_BY_EXT } from './lib/metadata.js';
 import { readAt } from './lib/util.js';
+import { listRemovableVolumes } from './lib/devices.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PUBLIC_DIR = path.join(__dirname, 'public');
+const PUBLIC_DIR = path.join(__dirname, 'server', 'static', 'public');
 
 const STATIC_TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -36,48 +38,84 @@ const COVER_NAMES = /^(cover|folder|front|album|jacket|artwork)\.(jpe?g|png)$/i;
 // ---- CLI 引数 -------------------------------------------------------------
 
 function parseArgs(argv) {
-  const opts = { dir: null, port: 8323, host: '127.0.0.1', cache: true };
+  const opts = { dir: null, port: 8323, host: '127.0.0.1', cache: true, sources: [] };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--port') opts.port = Number(argv[++i]);
     else if (a === '--host') opts.host = argv[++i];
+    else if (a === '--source') opts.sources.push(argv[++i]);
     else if (a === '--no-cache') opts.cache = false;
+    else if (a === '--open') opts.open = true;
+    else if (a === '--exit-on-close') opts.exitOnClose = true;
     else if (a === '--help' || a === '-h') opts.help = true;
     else if (!a.startsWith('-') && !opts.dir) opts.dir = a;
   }
   return opts;
 }
 
+/** 既定ブラウザで URL を開く (macOS / Windows / Linux) */
+function openBrowser(url) {
+  const cmd = process.platform === 'darwin' ? ['open', url]
+    : process.platform === 'win32' ? ['cmd', '/c', 'start', '', url]
+    : ['xdg-open', url];
+  spawn(cmd[0], cmd.slice(1), { stdio: 'ignore', detached: true }).unref();
+}
+
 // ---- ライブラリ状態 -------------------------------------------------------
 
 const state = {
   rootDir: null,
+  sources: new Map(),        // srcId -> {id, dir, label, removable, tracks, errors}
   tracks: [],
   byId: new Map(),
-  errors: [],
   scanning: false,
   scannedAt: null,
   ffmpeg: false,
   folderArtCache: new Map(), // dir -> ファイル名 or null
+  deviceLister: listRemovableVolumes,
 };
+
+function sourceId(dir) {
+  return createHash('sha1').update(path.resolve(dir)).digest('hex').slice(0, 12);
+}
+
+/** 全ソースのトラックを一つの索引にまとめ直す */
+function rebuildIndex() {
+  state.tracks = [...state.sources.values()].flatMap((s) => s.tracks);
+  state.byId = new Map(state.tracks.map((t) => [t.id, t]));
+  state.scannedAt = new Date().toISOString();
+  state.folderArtCache.clear();
+}
+
+async function scanSource(src, useCache = true) {
+  console.log(`スキャン中: ${src.dir}`);
+  const t0 = Date.now();
+  // リムーバブルデバイスはディスクにキャッシュを残さない (プライバシー配慮:
+  // 抜いた後のデバイスの中身の記録が Mac 側に残らないようにする)
+  const { tracks, errors } = await scanLibrary(src.dir, {
+    useCache: useCache && !src.removable,
+    onProgress: (done, total) => console.log(`  ... ${done}/${total}`),
+  });
+  src.tracks = tracks.map((t) => ({ ...t, src: src.id }));
+  src.errors = errors;
+  console.log(`スキャン完了: ${tracks.length} 曲 (${((Date.now() - t0) / 1000).toFixed(1)} 秒)` +
+    (errors.length ? `, 読み取り失敗 ${errors.length} 件` : ''));
+}
 
 async function rescan(useCache = true) {
   if (state.scanning) return;
   state.scanning = true;
   try {
-    console.log(`スキャン中: ${state.rootDir}`);
-    const t0 = Date.now();
-    const { tracks, errors } = await scanLibrary(state.rootDir, {
-      useCache,
-      onProgress: (done, total) => console.log(`  ... ${done}/${total}`),
-    });
-    state.tracks = tracks;
-    state.byId = new Map(tracks.map((t) => [t.id, t]));
-    state.errors = errors;
-    state.scannedAt = new Date().toISOString();
-    state.folderArtCache.clear();
-    console.log(`スキャン完了: ${tracks.length} 曲 (${((Date.now() - t0) / 1000).toFixed(1)} 秒)` +
-      (errors.length ? `, 読み取り失敗 ${errors.length} 件` : ''));
+    for (const src of state.sources.values()) {
+      try {
+        await scanSource(src, useCache);
+      } catch (err) {
+        // デバイスが抜かれた等: 空にして残す (UI から取り外し可能)
+        src.tracks = [];
+        src.errors = [{ path: src.dir, error: String(err?.message ?? err) }];
+      }
+    }
+    rebuildIndex();
   } finally {
     state.scanning = false;
   }
@@ -132,10 +170,13 @@ function notFound(res, msg = 'not found') {
   sendJson(res, 404, { error: msg });
 }
 
-/** ライブラリ内の実ファイルパスを安全に解決する */
+/** トラックの属すソース内の実ファイルパスを安全に解決する */
 function resolveTrackPath(track) {
-  const full = path.resolve(state.rootDir, track.path);
-  if (!full.startsWith(path.resolve(state.rootDir) + path.sep)) return null;
+  const src = state.sources.get(track.src);
+  if (!src) return null;
+  const base = path.resolve(src.dir);
+  const full = path.resolve(base, track.path);
+  if (!full.startsWith(base + path.sep)) return null;
   return full;
 }
 
@@ -162,6 +203,7 @@ async function serveStatic(req, res, urlPath) {
 function serveLibrary(res) {
   const tracks = state.tracks.map((t) => ({
     id: t.id,
+    src: t.src,
     path: t.path,
     ext: t.ext,
     size: t.size,
@@ -176,14 +218,125 @@ function serveLibrary(res) {
     codec: t.codec,
     hasArt: Boolean(t.art),
   }));
+  const sources = [...state.sources.values()].map((s) => ({
+    id: s.id,
+    dir: s.dir,
+    label: s.label,
+    removable: s.removable,
+    tracks: s.tracks.length,
+    errors: s.errors.length,
+  }));
   sendJson(res, 200, {
     dir: state.rootDir,
+    server: 'node', // サーバ実装の識別 (UI のバッジ表示用)
+    sources,
     scannedAt: state.scannedAt,
     scanning: state.scanning,
     ffmpeg: state.ffmpeg,
-    errors: state.errors.length,
+    errors: sources.reduce((n, s) => n + s.errors, 0),
     tracks,
   });
+}
+
+// ---- ブラウザ接続の監視 (--exit-on-close) ----------------------------------
+// フロントが張る SSE 接続で「開いているページ数」を数え、全ページが閉じて
+// 猶予時間が過ぎたらプロセスを終了する (ワンクリック起動のアプリ的な挙動)。
+
+const presence = { clients: 0, exitTimer: null };
+const EXIT_GRACE_MS = 8000; // リロード・画面遷移で誤終了しないための猶予
+
+function servePresence(req, res, exitOnClose) {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-store',
+    'Connection': 'keep-alive',
+  });
+  res.write('retry: 3000\n\n');
+  presence.clients++;
+  clearTimeout(presence.exitTimer);
+  const keepalive = setInterval(() => res.write(': ping\n\n'), 25000);
+  req.on('close', () => {
+    clearInterval(keepalive);
+    presence.clients--;
+    if (!exitOnClose || presence.clients > 0) return;
+    clearTimeout(presence.exitTimer);
+    presence.exitTimer = setTimeout(() => {
+      if (presence.clients <= 0) {
+        console.log('ブラウザが閉じられたため macca を終了します');
+        process.exit(0);
+      }
+    }, EXIT_GRACE_MS);
+  });
+}
+
+// ---- デバイス (リムーバブルストレージ) -------------------------------------
+
+async function serveDevices(res) {
+  let volumes = [];
+  try {
+    volumes = await state.deviceLister();
+  } catch {
+    // 検出失敗は「デバイスなし」として扱う
+  }
+  sendJson(res, 200, {
+    devices: volumes.map((v) => ({
+      id: sourceId(v.path),
+      path: v.path,
+      label: v.label,
+      scanned: state.sources.has(sourceId(v.path)),
+    })),
+  });
+}
+
+function readJsonBody(req) {
+  return new Promise((resolve) => {
+    let data = '';
+    req.on('data', (c) => {
+      data += c;
+      if (data.length > 64 * 1024) req.destroy();
+    });
+    req.on('end', () => {
+      try { resolve(JSON.parse(data)); } catch { resolve(null); }
+    });
+    req.on('error', () => resolve(null));
+  });
+}
+
+/** 接続中デバイスをソースとして追加してスキャンする */
+async function addDeviceSource(req, res, useCache) {
+  const body = await readJsonBody(req);
+  const reqPath = typeof body?.path === 'string' ? path.resolve(body.path) : null;
+  let volumes = [];
+  try {
+    volumes = await state.deviceLister();
+  } catch { /* 下の 400 へ */ }
+  // 任意のパスをスキャンさせない: 現在マウント中のデバイスに限定する
+  const vol = volumes.find((v) => path.resolve(v.path) === reqPath);
+  if (!vol) return sendJson(res, 400, { error: '接続中のデバイスではありません' });
+
+  const id = sourceId(vol.path);
+  if (!state.sources.has(id)) {
+    const src = { id, dir: vol.path, label: vol.label, removable: true, tracks: [], errors: [] };
+    state.sources.set(id, src);
+    try {
+      await scanSource(src, useCache);
+    } catch (err) {
+      state.sources.delete(id);
+      return sendJson(res, 500, { error: `スキャンに失敗しました: ${err?.message ?? err}` });
+    }
+    rebuildIndex();
+  }
+  return serveLibrary(res);
+}
+
+/** デバイスソースを一覧から外す (ファイルには触れない) */
+function removeDeviceSource(res, id) {
+  const src = state.sources.get(id);
+  if (!src) return notFound(res, '不明なソース ID');
+  if (!src.removable) return sendJson(res, 400, { error: 'メインライブラリは取り外せません' });
+  state.sources.delete(id);
+  rebuildIndex();
+  return serveLibrary(res);
 }
 
 async function serveStream(req, res, track, query) {
@@ -310,9 +463,26 @@ async function serveArtwork(res, track) {
 
 // ---- サーバ起動 -----------------------------------------------------------
 
-export async function createServer(rootDir, { useCache = true } = {}) {
+export async function createServer(rootDir, { useCache = true, deviceLister, extraSources = [], exitOnClose = false } = {}) {
   state.rootDir = path.resolve(rootDir);
+  if (deviceLister) state.deviceLister = deviceLister;
   state.ffmpeg = await detectFfmpeg();
+  state.sources.clear();
+  const primary = {
+    id: sourceId(state.rootDir), dir: state.rootDir,
+    label: 'ライブラリ', removable: false, tracks: [], errors: [],
+  };
+  state.sources.set(primary.id, primary);
+  // --source で明示追加されたフォルダ (MTP の FUSE マウント先や NAS など)
+  for (const dir of extraSources) {
+    const resolved = path.resolve(dir);
+    const id = sourceId(resolved);
+    if (state.sources.has(id)) continue;
+    state.sources.set(id, {
+      id, dir: resolved, label: path.basename(resolved) || resolved,
+      removable: false, tracks: [], errors: [],
+    });
+  }
   await rescan(useCache);
 
   const server = http.createServer(async (req, res) => {
@@ -325,6 +495,13 @@ export async function createServer(rootDir, { useCache = true } = {}) {
         await rescan(useCache);
         return serveLibrary(res);
       }
+      if (p === '/api/presence') return servePresence(req, res, exitOnClose);
+      if (p === '/api/devices') return serveDevices(res);
+      if (p === '/api/source' && req.method === 'POST') {
+        return addDeviceSource(req, res, useCache);
+      }
+      const ms = /^\/api\/source\/([0-9a-f]{12})$/.exec(p);
+      if (ms && req.method === 'DELETE') return removeDeviceSource(res, ms[1]);
 
       let m = /^\/api\/stream\/([0-9a-f]{16})$/.exec(p);
       if (m) {
@@ -354,8 +531,9 @@ const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPat
 if (isMain) {
   const opts = parseArgs(process.argv.slice(2));
   if (opts.help) {
-    console.log('使い方: node server.js [音楽ディレクトリ] [--port 8323] [--host 127.0.0.1] [--no-cache]');
+    console.log('使い方: node server.js [音楽ディレクトリ] [--port 8323] [--host 127.0.0.1] [--source <dir>]... [--no-cache]');
     console.log('ディレクトリを省略すると iTunes / ミュージックのライブラリを自動検出します。');
+    console.log('--source は追加のライブラリフォルダ (MTP の FUSE マウント先や NAS など)。複数指定可。');
     process.exit(0);
   }
   let dir = opts.dir;
@@ -377,12 +555,35 @@ if (isMain) {
     process.exit(1);
   }
 
-  const server = await createServer(dir, { useCache: opts.cache });
-  server.listen(opts.port, opts.host, () => {
+  const server = await createServer(dir, {
+    useCache: opts.cache,
+    extraSources: opts.sources,
+    exitOnClose: opts.exitOnClose,
+  });
+
+  // ランチャー起動 (--exit-on-close) では重複起動を許す:
+  // ポートが使用中なら次のポートへずらして新しいインスタンスを立てる
+  let port = opts.port;
+  let retries = opts.exitOnClose ? 20 : 0;
+  const onError = (err) => {
+    if (err.code === 'EADDRINUSE' && retries-- > 0) {
+      port++;
+      server.listen(port, opts.host);
+      return;
+    }
+    console.error(`エラー: ポート ${port} で待ち受けできません (${err.code})`);
+    process.exit(1);
+  };
+  server.on('error', onError);
+  server.once('listening', () => {
+    server.removeListener('error', onError);
+    const url = `http://${opts.host === '0.0.0.0' ? '127.0.0.1' : opts.host}:${port}/`;
     console.log('');
-    console.log(`  macca 起動: http://${opts.host}:${opts.port}/`);
+    console.log(`  macca 起動: ${url}`);
     console.log(`  ライブラリ: ${path.resolve(dir)}`);
     console.log(`  ffmpeg: ${state.ffmpeg ? 'あり (非対応形式は WAV に変換して再生)' : 'なし (Safari 以外では ALAC/AIFF が再生できない場合があります)'}`);
     console.log('');
+    if (opts.open) openBrowser(url);
   });
+  server.listen(port, opts.host);
 }

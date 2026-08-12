@@ -11,3 +11,9 @@
 
 # ALAC WASM ビルド時にクローンされるソース (成果物 alac.wasm はコミットする)
 build/alac-wasm/alac-src/
+
+# リリース成果物 (GitHub Releases に添付する)
+build/release/
+
+# ローカルビルドした Go バイナリ (ランチャー/macca.app がこれを優先起動する)
+/macca

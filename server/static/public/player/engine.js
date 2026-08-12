@@ -19,6 +19,10 @@ const ENGINE_EXTS = new Set([
 const GAIN_CACHE_KEY = 'macca-track-gains';
 const GAIN_CACHE_MAX = 5000;
 
+// これより長いトラックは全体デコードせず <audio> ストリーミングに任せる
+// (全体デコードは開始が遅くメモリも食う: 44.1kHz ステレオで約 21MB/分)
+const MAX_ENGINE_DURATION = 15 * 60;
+
 export class AudioEngine {
   constructor({ wasmUrl = '/player/alac.wasm', streamUrl = (t) => `/api/stream/${t.id}` } = {}) {
     this.wasmUrl = wasmUrl;
@@ -36,6 +40,7 @@ export class AudioEngine {
     this.nextProvider = null;        // () => track | null
     this.ontrackstart = null;        // (track, {auto}) => void
     this.onqueueend = null;          // () => void
+    this.onhandoff = null;           // (track) => void  エンジン非対応の次曲を委譲
 
     this._gen = 0;
     this._alacPromise = null;
@@ -43,9 +48,11 @@ export class AudioEngine {
     this._gainsSaveTimer = null;
   }
 
-  /** このエンジンでデコード・再生できる形式か */
+  /** このエンジンでデコード・再生できる形式・長さか */
   canPlay(track) {
-    return typeof AudioContext !== 'undefined' && ENGINE_EXTS.has(track.ext);
+    if (typeof AudioContext === 'undefined' || !ENGINE_EXTS.has(track.ext)) return false;
+    if (track.duration && track.duration > MAX_ENGINE_DURATION) return false; // 長尺は <audio> へ
+    return true;
   }
 
   get playingTrack() { return this.current?.track ?? null; }
@@ -58,8 +65,19 @@ export class AudioEngine {
     return Math.min(Math.max(t, 0), this.current.buffer.duration);
   }
 
+  /**
+   * ユーザー操作 (クリック等) の同期文脈で AudioContext を起こす。
+   * 非同期処理の後で resume するとブラウザのジェスチャー判定が切れて
+   * 拒否されることがあるため、クリック直後に必ず呼ぶ。
+   */
+  kickContext() {
+    this._userPaused = false;
+    if (this.ctx && this.ctx.state !== 'running') this.ctx.resume().catch(() => {});
+  }
+
   /** トラックを (ユーザー操作起点で) 再生する */
   async play(track) {
+    this.kickContext();
     const gen = ++this._gen;
     this._teardownPlayback();
 
@@ -75,8 +93,16 @@ export class AudioEngine {
     this._prefetchNext(gen);
   }
 
-  pause() { this.ctx?.suspend().catch(() => {}); }
-  resume() { this.ctx?.resume().catch(() => {}); }
+  pause() {
+    this._userPaused = true;
+    this.ctx?.suspend().catch(() => {});
+  }
+
+  resume() {
+    this._userPaused = false;
+    this.ctx?.resume().catch(() => {});
+  }
+
   toggle() { this.paused ? this.resume() : this.pause(); }
 
   seek(seconds) {
@@ -110,10 +136,19 @@ export class AudioEngine {
     }
   }
 
+  /** 再生モード変更などで、先読み済みの次曲を破棄して取り直す */
+  refreshNext() {
+    if (!this.current) return;
+    this._unscheduleNext();
+    this.next = null;
+    this._prefetchNext(this._gen);
+  }
+
   // ---- 内部: コンテキスト管理 ----------------------------------------------
 
   async _ensureContext(sampleRate) {
-    if (this.ctx && (!sampleRate || this.ctx.sampleRate === sampleRate)) return;
+    if (this.ctx && this.ctx.state !== 'closed' &&
+        (!sampleRate || this.ctx.sampleRate === sampleRate)) return;
     const old = this.ctx;
     this.ctx = null;
     if (old) await old.close().catch(() => {});
@@ -127,6 +162,16 @@ export class AudioEngine {
     this.masterGain = this.ctx.createGain();
     this.masterGain.gain.value = this.volume;
     this.masterGain.connect(this.ctx.destination);
+
+    // OS の割り込み (スリープ・出力デバイス切替等) で勝手に suspended に
+    // なったら復帰を試みる。ユーザーが明示的に一時停止した場合は何もしない
+    this.ctx.onstatechange = () => {
+      if (!this.ctx) return;
+      if ((this.ctx.state === 'suspended' || this.ctx.state === 'interrupted') &&
+          this.current && !this._userPaused) {
+        this.ctx.resume().catch(() => {});
+      }
+    };
   }
 
   // ---- 内部: デコード -------------------------------------------------------
@@ -291,6 +336,12 @@ export class AudioEngine {
     const track = this.nextProvider?.() ?? null;
     if (!track) { this.next = null; return; }
 
+    // エンジンで扱えない曲 (長尺など) は終端でアプリ側に委譲する
+    if (!this.canPlay(track)) {
+      this.next = { track, handoff: true };
+      return;
+    }
+
     // リピート 1 曲などで現曲と同じトラックならデコード結果を使い回す
     const promise = (track === this.current?.track)
       ? Promise.resolve({ buffer: this.current.buffer, trackGain: this.current.trackGain })
@@ -327,10 +378,22 @@ export class AudioEngine {
     }
     if (!next) { this.onqueueend?.(); return; }
 
+    if (next.handoff) {
+      this.next = null;
+      this.onhandoff?.(next.track);
+      return;
+    }
+
     const entry = next.entry ?? await next.promise;
     if (gen !== this._gen) return;
     if (!entry || entry.error) {
       this.next = null;
+      if (entry?.error && next.track) {
+        // 次曲のデコードに失敗しても再生列を止めない: <audio> 再生に委譲する
+        console.warn('次曲のデコードに失敗したため <audio> 再生に切り替えます:', entry.error);
+        this.onhandoff?.(next.track);
+        return;
+      }
       this.onqueueend?.();
       return;
     }

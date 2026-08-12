@@ -11,6 +11,7 @@
 <header id="topbar">
   <div class="logo">macca<span class="logo-dot">●</span></div>
   <input id="search" type="search" placeholder="曲名・アーティスト・アルバムを検索" autocomplete="off">
+  <span id="impl-badge" title="サーバ実装" hidden></span>
   <div id="stats" class="stats"></div>
   <button id="rescan" class="ghost-btn" title="ライブラリを再スキャン">再スキャン</button>
 </header>
@@ -23,7 +24,8 @@
     <button class="nav-item" data-view="artists">アーティスト</button>
     <div class="nav-section">フォーマット</div>
     <div id="fmt-filters"></div>
-    <div id="lib-info"></div>
+    <div class="nav-section">デバイス</div>
+    <div id="devices"><div class="dev-empty">検出中…</div></div>
   </nav>
   <main id="content"><div class="loading">読み込み中…</div></main>
 </div>
@@ -40,11 +42,16 @@
   </div>
   <div class="controls">
     <div class="buttons">
-      <button id="btn-shuffle" title="シャッフル">⤨</button>
       <button id="btn-prev" title="前の曲">⏮</button>
       <button id="btn-play" class="play-btn" title="再生 / 一時停止">▶</button>
       <button id="btn-next" title="次の曲">⏭</button>
-      <button id="btn-repeat" title="リピート">🔁</button>
+      <select id="play-mode" title="再生モード">
+        <option value="album">アルバム再生</option>
+        <option value="one">1回再生</option>
+        <option value="repeat-one">1曲リピート</option>
+        <option value="repeat-album">アルバムリピート</option>
+        <option value="shuffle-album">アルバムランダム</option>
+      </select>
     </div>
     <div class="seek">
       <span id="time-cur">0:00</span>

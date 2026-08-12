@@ -2,61 +2,80 @@
 
 **iTunes（Apple Music アプリ）を使わずに、ローカルの音楽ファイルを管理・再生する Web アプリ。**
 
-mp3 / AIFF / ALAC (m4a) / AAC / FLAC / WAV の入ったフォルダを指定してサーバを起動するだけで、
+mp3 / AIFF / ALAC (m4a) / AAC / FLAC / WAV の入ったフォルダをスキャンして、
 ブラウザからライブラリの閲覧・検索・再生ができます。
-**依存パッケージゼロ**（Node.js 標準ライブラリのみ）で、`npm install` も ffmpeg も不要。
+サーバは**依存ゼロのシングルバイナリ**（アイドル時メモリ約 12MB）。
 ファイルには一切書き込まず読み取り専用で動くので、既存のライブラリを壊す心配がありません。
 
 ![曲一覧](docs/screenshot-songs.png)
 
-## 背景
+## 設計原則
 
-Apple 純正アプリでローカルファイルとサブスクを同時に管理するのは厳しい
-（iTunes Match の同期でファイルが壊れる、非圧縮・可逆音源が数百 GB あると管理不能）
-という問題意識から作られています。
+1. **再生に特化する** — 管理機能より再生体験を優先する
+2. **軽量に保つ** — 依存ゼロ。要らないものを足さない
+3. **再生の邪魔をしない** — UI も処理も、いま鳴っている音を妨げない
+4. **音質に妥協しない** — ビット正確なデコード、不要なリサンプリングをしない
+5. **先人の真似をしない** — 既存プレーヤの再現ではなく、ファイルとフォルダを正とする最小構成を貫く
 
-- **ライブラリの実体はただのフォルダ構成**。macca はそれをスキャンして表示するだけで、
-  独自データベースにファイルを取り込んだり移動したりしません
-- Apple 純正アプリはサブスク再生専用と割り切り、手元のファイルは macca（または後述の代替アプリ）で管理する運用を想定しています
+## インストール
+
+[**Releases**](https://github.com/koshikawa-masato/macca/releases) からダウンロードするだけです。
+Node.js などの事前インストールは不要です。
+
+| OS | ファイル | 手順 |
+|----|---------|------|
+| **macOS** | `macca.dmg` | 開いて macca を Applications へドラッグ |
+| **Windows** | `macca.msi` | ダブルクリックでインストール → スタートメニューの「macca」 |
+| **Linux** | `macca-linux-*` | `chmod +x` して `./macca-linux-amd64 --open` |
+
+インストーラは未署名のため初回のみ OS の警告が出ます。
+macOS は右クリック →「開く」、Windows は「詳細情報」→「実行」で通過できます。
+
+Go が入っているなら 1 コマンドでも入ります（フロントエンド同梱・全 OS）:
+
+```sh
+go install github.com/koshikawa-masato/macca/cmd/macca@latest
+```
 
 ## 使い方
 
-Node.js 18 以上があれば動きます（macOS / Linux / Windows）。
+起動するとブラウザが開き、**iTunes / ミュージックの標準ライブラリを自動検出**します
+（macOS ミュージック.app `~/Music/Music/Media.localized/Music` → Windows 版 Apple Music →
+iTunes `~/Music/iTunes/iTunes Media` → `~/Music` の順）。あとは曲をクリックするだけです。
 
-```sh
-git clone https://github.com/koshikawa-masato/macca.git
-cd macca
-node server.js
+アプリのように振る舞います:
+
+- **ブラウザ（macca のページ）を閉じると数秒後に自動終了**します
+  （複数タブや他の端末で開いている間は終了しません）
+- macOS では起動中の Dock アイコンをもう一度クリックするとページを開き直します
+- **多重起動も可能** — ポートが使用中なら自動的に次のポート (8324, 8325, …) で立ち上がります
+
+コマンドラインからの起動とオプション:
+
+```
+使い方: macca [音楽ディレクトリ] [--port 8323] [--host 127.0.0.1] [--source <dir>]... [--no-cache] [--open] [--exit-on-close]
 ```
 
-起動したら `http://127.0.0.1:8323/` をブラウザで開くだけです。
-
-```
-使い方: node server.js [音楽ディレクトリ] [--port 8323] [--host 127.0.0.1] [--no-cache]
-```
-
-ディレクトリを省略すると、**iTunes / ミュージックの標準ライブラリを自動検出**します
-（優先順: macOS ミュージック.app `~/Music/Music/Media.localized/Music` →
-Windows 版 Apple Music → iTunes `~/Music/iTunes/iTunes Media` → `~/Music`）。
-もちろん任意のフォルダを明示的に指定しても構いません。
-
-- 初回スキャン結果は `~/.cache/macca/` にキャッシュされ、2 回目以降の起動は高速です
-  （ファイルの更新日時・サイズが変わったものだけ再読み込み）
+- 音楽ディレクトリを指定すれば任意のフォルダを配信できます
+- `--source <dir>`（複数可）で NAS のマウント先などを追加できます
 - `--host 0.0.0.0` にすると同じ LAN 内のスマホなどからも聴けます
-  （認証はないので、信頼できるネットワーク内でのみ使ってください）
+  （認証はないので、信頼できるネットワーク内でのみ使ってください。
+  この用途では `--exit-on-close` を付けずに起動します）
+- 初回スキャン結果は `~/.cache/macca/` にキャッシュされ、2 回目以降の起動は高速です
+  （更新日時・サイズが変わったファイルだけ再読み込み）
 
-### ブラウザと再生形式について
+## 再生
 
-**全対応形式（MP3 / AAC / ALAC / AIFF / FLAC / WAV）がすべてのモダンブラウザで再生できます。ffmpeg は不要です。**
+### 全形式がブラウザで鳴る（ffmpeg 不要）
 
-ブラウザがネイティブ再生できない ALAC と AIFF は、macca に同梱のデコーダで
-ブラウザ内デコードします（ロスレス・シーク可能）:
+MP3 / AAC / ALAC / AIFF / FLAC / WAV すべてをモダンブラウザで再生できます。
+ブラウザがネイティブ再生できない ALAC と AIFF は同梱デコーダでブラウザ内デコードします
+（ロスレス・シーク可能）:
 
-- **ALAC**: Apple がオープンソース化した公式デコーダ（Apache 2.0）を WASM 化して同梱（わずか 16KB）
-- **AIFF**: 実質ビッグエンディアン PCM なので純 JS でデコード
+- **ALAC** — Apple がオープンソース化した公式デコーダ（Apache 2.0）を WASM 化して同梱（16KB）
+- **AIFF** — 実質ビッグエンディアン PCM なので純 JS でデコード
 
-サーバに ffmpeg があれば、それ以外の未知の形式に当たったときのフォールバック
-（WAV へのロスレス変換ストリーミング）としてだけ使われます。
+サーバに ffmpeg があれば、未知の形式に当たったときのフォールバックとしてだけ使われます。
 
 ### 再生エンジン
 
@@ -66,8 +85,21 @@ Windows 版 Apple Music → iTunes `~/Music/iTunes/iTunes Media` → `~/Music`�
   ライブ盤・クラシック・コンセプトアルバムが途切れません
 - **リサンプリング回避** — AudioContext を音源のサンプルレートに合わせて生成するため、
   44.1kHz の音源が不用意に 48kHz へ変換されて劣化することがありません
-- **音量正規化**（プレーヤ右下の「N」ボタン）— デコード済み PCM から実測した
-  ラウドネスで曲間の音量差を揃えます（iTunes のサウンドチェックに相当。ファイルは変更しません）
+- **音量正規化**（プレーヤ右下の「N」ボタン）— デコード済み PCM から実測したラウドネスで
+  曲間の音量差を揃えます（iTunes のサウンドチェックに相当。ファイルは変更しません）
+- **長尺トラックの自動振り分け** — 15 分を超えるトラックは全体デコードせず
+  ストリーミング再生に切り替え、即時に再生を開始します
+
+### 再生モード
+
+曲をクリックすると**その曲のアルバム全体**（トラック番号順）が再生キューになります。
+プレーヤのセレクタで切り替え:
+
+- **アルバム再生**（既定） — クリックした曲からアルバム末尾まで再生して停止
+- **1回再生** / **1曲リピート**
+- **アルバムリピート** / **アルバムランダム**（全曲を一巡するまで同じ曲を繰り返しません）
+
+ライブラリ全体のシャッフルはあえて載せていません。アルバムで聴くためのプレーヤです。
 
 ## 機能
 
@@ -77,12 +109,25 @@ Windows 版 Apple Music → iTunes `~/Music/iTunes/iTunes Media` → `~/Music`�
 - フォーマット別フィルタ（MP3 / ALAC / AIFF / FLAC …）— 「非圧縮のものだけ聴きたい」に対応
 - 埋め込みアートワーク表示（ID3 APIC / MP4 covr / FLAC PICTURE）、
   なければフォルダ内の `cover.jpg` / `folder.jpg` 等にフォールバック
-- シャッフル・リピート・キーボード操作（Space で再生/停止）・OS のメディアキー対応
+- キーボード操作（Space で再生/停止）・OS のメディアキー対応
 - 文字化け対策: エンコーディング宣言が壊れたタグ（Latin-1 と偽った Shift_JIS / UTF-8）を推定してデコード
+- **USB / SD カードのスキャン** — サイドバーの「デバイス」に接続中のリムーバブルストレージが
+  表示され、ワンクリックでライブラリに統合。取り外してもファイルには一切触れず、
+  **スキャン結果のキャッシュも Mac 側に残しません**（プライバシー配慮）
+
+### MTP 接続のデバイス（Android スマホ・一部の DAP）
+
+MTP はファイルシステムではないため、OS がフォルダとして見せてくれる場合のみ扱えます。
+Linux は gvfs マウントを自動検出します。macOS / Windows での現実的な選択肢:
+
+1. デバイス側に **USB ストレージモード**があれば切り替える
+2. SD カードを抜いてカードリーダーで挿す → 「デバイス」からスキャン
+3. [OpenMTP](https://openmtp.ganeshrvel.com/) 等でいったん PC 側へコピーしてスキャン
 
 ### 対応メタデータ
 
-すべて自前実装のパーサで、ファイルの必要な部分だけを読みます（240GB のライブラリでも全ファイル読み込みはしません）。
+すべて自前実装のパーサで、ファイルの必要な部分だけを読みます
+（240GB のライブラリでも全ファイル読み込みはしません）。
 
 | 形式 | コンテナ | 読むもの |
 |------|----------|----------|
@@ -94,60 +139,101 @@ Windows 版 Apple Music → iTunes `~/Music/iTunes/iTunes Media` → `~/Music`�
 
 タグがないファイルは「`アーティスト - タイトル.mp3`」形式のファイル名から推定します。
 
+## ソースから動かす
+
+サーバは **Go 版**（リリースに同梱しているもの）と **Node.js 版**の 2 実装があり、
+HTTP API・キャッシュ形式まで完全互換です（パリティテストで担保）。どちらでも動きます:
+
+```sh
+git clone https://github.com/koshikawa-masato/macca.git
+cd macca
+go run ./cmd/macca     # Go 1.23+ の場合
+node server.js         # Node.js 18+ の場合
+```
+
+ダブルクリック用ランチャーも同梱しています。リポジトリ直下に
+`go build -o macca ./cmd/macca` で Go バイナリを置いておくとそれを優先起動し、
+なければ Node.js 版を起動します（どちらで動いているかはヘッダのバッジで分かります）:
+
+- **macOS** — `macca.app`（Dock 対応・ターミナル不要）または `macca.command`
+- **Windows** — `macca.bat`
+- **Linux** — `macca.sh`
+
+うまく動かないときは、ポートを `--port 8080` のように変えるか、
+音楽フォルダを引数で直接指定してください。
+
 ## 開発
 
 ```sh
-npm test        # Node 標準の node:test で 17 テスト（外部依存なし）
+npm test                                  # 全テスト (Node 実装 + フロントのデコーダ)
+go build -o macca ./cmd/macca && \
+  MACCA_SERVER_BIN=./macca npm test       # Go 実装に対する受け入れ + パリティテスト
 ```
 
-テストは合成した mp3 / m4a (ALAC) / AIFF / FLAC / WAV フィクスチャと本物の ALAC ファイル
-（afconvert で生成しコミット済み）を使い、パーサ・ブラウザ側デコーダ（ALAC の波形復元精度まで）・
-HTTP API（Range リクエスト・アートワーク配信・パストラバーサル拒否）を検証します。
+### ビルド
 
-```
-server.js            HTTP サーバ (ストリーミング / API / 静的配信)
-lib/
-  scan.js            ライブラリスキャン + キャッシュ
-  metadata.js        拡張子ごとのディスパッチ
-  id3.js             ID3v2 パーサ
-  mp3.js             MP3 再生時間推定
-  mp4.js             MP4/M4A (ALAC/AAC) パーサ
-  flac.js            FLAC パーサ
-  aiff.js            AIFF パーサ
-  wav.js             WAV パーサ
-public/              フロントエンド (素の HTML/CSS/JS)
-public/player/
-  engine.js          Web Audio 再生エンジン (ギャップレス / 正規化 / レート追従)
-  demux-mp4.js       MP4 デマルチプレクサ (ALAC パケット抽出)
-  alac.js + alac.wasm  Apple ALAC デコーダ (WASM, Apache 2.0)
-  decode-aiff.js     AIFF 純 JS デコーダ
-  probe.js           サンプルレート検出
-  loudness.js        音量正規化ゲイン計算
-build/alac-wasm/     alac.wasm のビルドスクリプト (通常は再実行不要)
-test/                フィクスチャ生成 + テスト
+Go 1.23+ が必要です。フロントエンドは `server/static/public/` にあり、
+Go バイナリへ自動で埋め込まれます（コピー等の前処理は不要）。
+
+```sh
+go build -o macca ./cmd/macca   # サーバ単体。リポジトリ直下に置くとランチャー/macca.app がこれを優先起動
+./build/release.sh              # 全 OS 向けバイナリ一括ビルド → build/release/
+./build/dmg/build.sh            # macOS 配布用 DMG (要 macOS)
+./build/msi/build.sh            # Windows 配布用 MSI (要 msitools: brew install msitools)
 ```
 
-## 既製品という選択肢
+普段の開発では再実行不要な生成物のビルド:
 
-自分でホストするより既製アプリが合う場合の代表例:
+```sh
+./build/macca-app/build.sh              # macca.app ランチャー (launcher.swift 変更時)
+./build/alac-wasm/build.sh              # alac.wasm (要 emscripten)
+node build/gen-sjis/gen.mjs > server/sjis.go   # Shift_JIS テーブル
+```
 
-- **[Swinsian](https://swinsian.com/)** (macOS・有料) — iTunes 代替のド定番。大規模ライブラリに強い
-- **[foobar2000](https://www.foobar2000.org/)** (Windows/macOS・無料) — 老舗。プラグインで何でもできる
-- **[Doppler](https://brushedtype.co/doppler/)** (macOS/iOS・有料) — モダン UI のローカル再生専用
-- **[Navidrome](https://www.navidrome.org/)** / **[Jellyfin](https://jellyfin.org/)** (セルフホスト・無料) — 常時起動サーバがあるなら。外出先からも聴ける
-- **[Plexamp](https://www.plex.tv/plexamp/)** (Plex Pass) — セルフホスト系で音質・UI とも完成度が高い
-- **[beets](https://beets.io/)** (CLI・無料) — タグ整理・リネームの自動化に
+合成フィクスチャ（壊れタグ・Shift_JIS 偽装・VBR・ID3v2.2・unsync などの意地悪ケース含む）と
+本物の ALAC ファイルで、パーサ・ブラウザ側デコーダ（波形復元精度まで）・HTTP API を検証します。
 
-macca はこれらと違い「インストール不要・データベース不要・ファイル非破壊」を重視した最小構成です。
+```
+cmd/macca/           Go サーバのエントリポイント (go install 対応)
+server/              Go サーバ本体 (リリース版の実体)
+server/static/public フロントエンド (素の HTML/CSS/JS。Go バイナリに embed される)
+  └ player/          Web Audio 再生エンジン + ALAC(WASM)/AIFF デコーダ
+server.js + lib/     Node.js サーバ (同一挙動のリファレンス実装)
+macca.app/           macOS 用アプリバンドル
+build/
+  alac-wasm/         alac.wasm のビルド
+  gen-sjis/          Shift_JIS テーブル生成 (Go 用)
+  macca-app/         macca.app ランチャーのビルド
+  dmg/  msi/         インストーラ生成 (macOS / Windows)
+  release.sh         全 OS 向けバイナリの一括ビルド
+test/                フィクスチャ生成 + テスト (両実装共通の受け入れテスト)
+docs/                仕様書・スクリーンショット
+```
 
-## ロードマップ
+## 背景
 
-- [x] ギャップレス再生
-- [x] ALAC / AIFF のブラウザ内デコード（ffmpeg 不要化）
-- [x] 音量正規化
-- [ ] プレイリスト（M3U 読み書き）
-- [ ] タグ編集
-- [ ] Ogg Vorbis / Opus のメタデータパース（再生は対応済み）
+Apple 純正アプリでローカルファイルとサブスクを同時に管理するのは厳しい
+（iTunes Match の同期でファイルが壊れる、非圧縮・可逆音源が数百 GB あると管理不能）
+という問題意識から作られています。
+
+**ライブラリの実体はただのフォルダ構成**。macca はそれをスキャンして表示するだけで、
+独自データベースにファイルを取り込んだり移動したりしません。
+Apple 純正アプリはサブスク再生専用と割り切り、手元のファイルは macca で聴く運用を想定しています。
+
+似た用途の既製アプリ（[Swinsian](https://swinsian.com/)、[foobar2000](https://www.foobar2000.org/)、
+[Doppler](https://brushedtype.co/doppler/)、[Navidrome](https://www.navidrome.org/)、
+[Plexamp](https://www.plex.tv/plexamp/) など）と違い、
+macca は「**インストール即再生・データベース不要・ファイル非破壊**」の最小構成を貫きます。
+
+## やらないこと
+
+軽さと安全のために、意図して載せていない機能です:
+
+- **タグ編集** — macca はファイルに一切書き込みません。タグ整理は
+  [beets](https://beets.io/) や [Mp3tag](https://www.mp3tag.de/) など専用ツールの領域です
+- **プレイリスト** — アルバムで聴くためのプレーヤです。再生単位はフォルダ＝アルバムで完結させます
+- **ライブラリ全体のシャッフル** — 同上
+- **独自データベース・ファイルの取り込み** — フォルダ構成が唯一の正です
 
 ## ライセンス
 

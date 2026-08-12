@@ -4,6 +4,7 @@ import { AudioEngine } from './player/engine.js';
 
 const state = {
   tracks: [],
+  sources: [],
   ffmpeg: false,
   dir: '',
   view: 'songs',          // songs | albums | artists
@@ -14,10 +15,12 @@ const state = {
   sortKey: null,
   sortAsc: true,
   renderLimit: 1000,
-  queue: [],              // 再生キュー (トラック配列)
+  queue: [],              // 再生キュー (クリックした曲のアルバム全体)
   queueIdx: -1,
-  shuffle: false,
-  repeat: 'off',          // off | all | one
+  // album: アルバム再生(末尾で停止) / one: 1回再生 / repeat-one: 1曲リピート
+  // repeat-album: アルバムリピート / shuffle-album: アルバムランダム
+  playMode: 'album',
+  shuffleBag: [],         // アルバムランダムの残り曲 (一巡するまで再シャッフルしない)
   playing: null,          // 再生中トラック
   transcoding: false,
   mode: 'engine',         // engine (Web Audio) | element (<audio> フォールバック)
@@ -339,24 +342,51 @@ function renderStats() {
   const totalSize = state.tracks.reduce((s, t) => s + t.size, 0);
   $('#stats').textContent =
     `${state.tracks.length.toLocaleString()} 曲 · ${(totalDur / 3600).toFixed(1)} 時間 · ${fmtSize(totalSize)}`;
-  $('#lib-info').innerHTML =
-    `${esc(state.dir)}<br>` +
-    (engine
-      ? '内蔵デコーダ: あり（ALAC / AIFF もブラウザ内で再生）'
-      : state.ffmpeg
-        ? 'ffmpeg: あり（全形式再生可）'
-        : '<span class="warn">ffmpeg なし: Chrome 等では ALAC / AIFF が再生できません（Safari 推奨）</span>');
 }
 
 // ---- 再生 -----------------------------------------------------------------
 
 function playFromList(id) {
-  const list = visibleTracks();
-  const idx = list.findIndex((t) => t.id === id);
-  if (idx === -1) return;
-  state.queue = list;
-  state.queueIdx = idx;
-  playTrack(list[idx]);
+  const t = visibleTracks().find((x) => x.id === id);
+  if (!t) return;
+  // 再生キューはクリックした曲のアルバム全体 (トラック番号順)
+  const key = albumKey(t);
+  const album = state.tracks
+    .filter((x) => albumKey(x) === key)
+    .sort((a, b) => (a.track ?? 9999) - (b.track ?? 9999) || collator.compare(a.title, b.title));
+  state.queue = album;
+  state.queueIdx = album.indexOf(t);
+  state.shuffleBag = [];
+  playTrack(t);
+}
+
+// ---- 再生モード -------------------------------------------------------------
+
+/** アルバムランダム: 全曲を一巡するまで再シャッフルしない袋方式 */
+function drawFromShuffleBag() {
+  if (state.shuffleBag.length === 0) {
+    const idxs = state.queue.map((_, i) => i)
+      .filter((i) => i !== state.queueIdx || state.queue.length === 1);
+    for (let i = idxs.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [idxs[i], idxs[j]] = [idxs[j], idxs[i]];
+    }
+    state.shuffleBag = idxs;
+  }
+  return state.shuffleBag.pop() ?? -1;
+}
+
+/** 曲が終わったときの次のキュー位置 (-1 = 停止) */
+function nextQueueIdx() {
+  const n = state.queue.length;
+  if (n === 0) return -1;
+  switch (state.playMode) {
+    case 'one': return -1;
+    case 'repeat-one': return state.queueIdx;
+    case 'shuffle-album': return drawFromShuffleBag();
+    case 'repeat-album': return (state.queueIdx + 1) % n;
+    default: return state.queueIdx + 1 < n ? state.queueIdx + 1 : -1; // album
+  }
 }
 
 function updateNowPlayingUI(t) {
@@ -422,24 +452,25 @@ function playTrack(t) {
   updateNowPlayingUI(t);
 }
 
-function nextIdx(delta) {
-  const n = state.queue.length;
-  if (n === 0) return -1;
-  if (state.shuffle && delta > 0) return Math.floor(Math.random() * n);
-  return state.queueIdx + delta;
-}
-
 function playNext(auto = false) {
-  let idx = nextIdx(1);
-  if (idx >= state.queue.length) {
-    if (state.repeat === 'all') idx = 0;
-    else if (auto) return; // 末尾で停止
-    else idx = state.queue.length - 1;
+  let idx;
+  if (auto) {
+    idx = nextQueueIdx();
+  } else if (state.playMode === 'shuffle-album') {
+    idx = drawFromShuffleBag();
+  } else {
+    // 手動の「次へ」はモードによらずアルバム内を進む
+    idx = state.queueIdx + 1;
+    if (idx >= state.queue.length) {
+      idx = state.playMode === 'repeat-album' ? 0 : -1;
+    }
   }
-  if (idx >= 0 && idx < state.queue.length) {
-    state.queueIdx = idx;
-    playTrack(state.queue[idx]);
+  if (idx === -1 || !state.queue[idx]) {
+    updatePlayButton();
+    return; // 停止
   }
+  state.queueIdx = idx;
+  playTrack(state.queue[idx]);
 }
 
 function playPrev() {
@@ -450,7 +481,7 @@ function playPrev() {
     return;
   }
   let idx = state.queueIdx - 1;
-  if (idx < 0) idx = state.repeat === 'all' ? state.queue.length - 1 : 0;
+  if (idx < 0) idx = state.playMode === 'repeat-album' ? state.queue.length - 1 : 0;
   state.queueIdx = idx;
   if (state.queue[idx]) playTrack(state.queue[idx]);
 }
@@ -494,13 +525,8 @@ function updateMediaSession(t) {
 if (engine) {
   engine.setNormalization(state.normalize);
   engine.nextProvider = () => {
-    if (state.repeat === 'one') return state.playing;
-    let idx = nextIdx(1);
-    if (idx >= state.queue.length) {
-      if (state.repeat !== 'all') return null;
-      idx = 0;
-    }
-    return state.queue[idx] ?? null;
+    const idx = nextQueueIdx();
+    return idx === -1 ? null : state.queue[idx] ?? null;
   };
   engine.ontrackstart = (t, { auto }) => {
     if (!auto) return; // 手動再生は playTrack 側で UI 更新済み
@@ -511,9 +537,16 @@ if (engine) {
     updateNowPlayingUI(t);
   };
   engine.onqueueend = () => updatePlayButton();
+  // 次曲がエンジン非対応 (15 分超の長尺など) の場合は <audio> 再生に引き継ぐ
+  engine.onhandoff = (t) => {
+    const idx = state.queue.indexOf(t);
+    if (idx !== -1) state.queueIdx = idx;
+    playTrack(t);
+  };
 
   setInterval(() => {
     if (state.mode !== 'engine' || !engine.playingTrack) return;
+    updatePlayButton(); // OS割り込みで止まった場合もボタン表示を実状態に合わせる
     const dur = engine.duration;
     $('#time-cur').textContent = fmtTime(engine.currentTime);
     $('#time-total').textContent = fmtTime(dur);
@@ -542,7 +575,7 @@ audio.addEventListener('timeupdate', () => {
 });
 audio.addEventListener('ended', () => {
   if (state.mode !== 'element') return;
-  if (state.repeat === 'one') {
+  if (state.playMode === 'repeat-one') {
     audio.currentTime = 0;
     audio.play().catch(() => {});
   } else {
@@ -575,14 +608,20 @@ seekbar.addEventListener('change', () => {
 $('#btn-play').addEventListener('click', togglePlay);
 $('#btn-next').addEventListener('click', () => playNext());
 $('#btn-prev').addEventListener('click', playPrev);
-$('#btn-shuffle').addEventListener('click', function () {
-  state.shuffle = !state.shuffle;
-  this.classList.toggle('on', state.shuffle);
-});
-$('#btn-repeat').addEventListener('click', function () {
-  state.repeat = state.repeat === 'off' ? 'all' : state.repeat === 'all' ? 'one' : 'off';
-  this.classList.toggle('on', state.repeat !== 'off');
-  this.textContent = state.repeat === 'one' ? '🔂' : '🔁';
+
+const modeSel = $('#play-mode');
+{
+  const saved = localStorage.getItem('macca-playmode');
+  if (['album', 'one', 'repeat-one', 'repeat-album', 'shuffle-album'].includes(saved)) {
+    state.playMode = saved;
+  }
+  modeSel.value = state.playMode;
+}
+modeSel.addEventListener('change', () => {
+  state.playMode = modeSel.value;
+  localStorage.setItem('macca-playmode', state.playMode);
+  state.shuffleBag = [];
+  if (state.mode === 'engine') engine?.refreshNext(); // 先読み済みの次曲を取り直す
 });
 
 const volbar = $('#volbar');
@@ -615,6 +654,68 @@ document.addEventListener('keydown', (e) => {
   else if (e.key === 'ArrowRight' && e.shiftKey) playNext();
   else if (e.key === 'ArrowLeft' && e.shiftKey) playPrev();
 });
+
+// ---- デバイス (リムーバブルストレージ) --------------------------------------
+
+let devices = [];
+
+async function refreshDevices() {
+  try {
+    const res = await fetch('/api/devices');
+    devices = (await res.json()).devices ?? [];
+  } catch {
+    devices = [];
+  }
+  renderDevices();
+}
+
+function renderDevices() {
+  const el = $('#devices');
+  if (devices.length === 0) {
+    el.innerHTML = '<div class="dev-empty">未接続</div>';
+    return;
+  }
+  el.innerHTML = devices.map((d) => {
+    const src = (state.sources ?? []).find((s) => s.id === d.id);
+    const count = src ? `${src.tracks} 曲` : '';
+    const btn = d.scanned
+      ? `<button class="dev-btn" data-eject="${d.id}" title="一覧から外す (ファイルには触れません)">✕</button>`
+      : `<button class="dev-btn" data-scan="${esc(d.path)}">スキャン</button>`;
+    return `<div class="dev-row" title="${esc(d.path)}">
+      <span class="dev-name">💾 ${esc(d.label)}</span>
+      <span class="dev-count">${count}</span>${btn}</div>`;
+  }).join('');
+
+  el.querySelectorAll('[data-scan]').forEach((b) => b.addEventListener('click', async () => {
+    b.disabled = true;
+    b.textContent = 'スキャン中…';
+    try {
+      const res = await fetch('/api/source', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: b.dataset.scan }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error ?? res.status);
+      applyLibrary(json);
+      toast('デバイスをスキャンしました');
+    } catch (err) {
+      toast(`デバイスのスキャンに失敗しました: ${err.message}`);
+    }
+    refreshDevices();
+  }));
+  el.querySelectorAll('[data-eject]').forEach((b) => b.addEventListener('click', async () => {
+    try {
+      const res = await fetch(`/api/source/${b.dataset.eject}`, { method: 'DELETE' });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error ?? res.status);
+      applyLibrary(json);
+    } catch (err) {
+      toast(`取り外しに失敗しました: ${err.message}`);
+    }
+    refreshDevices();
+  }));
+}
 
 // ---- 検索 / ナビゲーション ------------------------------------------------
 
@@ -657,8 +758,19 @@ function applyLibrary(data) {
   state.tracks = data.tracks;
   state.ffmpeg = data.ffmpeg;
   state.dir = data.dir;
+  state.sources = data.sources ?? [];
+  // サーバ実装 (Go / JS) のバッジを曲数の左に表示
+  const badge = $('#impl-badge');
+  if (data.server) {
+    const isGo = data.server === 'go';
+    badge.textContent = isGo ? 'Go' : 'JS';
+    badge.className = `impl-badge ${isGo ? 'go' : 'js'}`;
+    badge.title = `サーバ実装: ${isGo ? 'Go (シングルバイナリ)' : 'Node.js'}`;
+    badge.hidden = false;
+  }
   renderStats();
   renderFormatChips();
+  renderDevices();
   render();
   if (data.errors > 0) toast(`${data.errors} 件のファイルが読み取れませんでした`);
 }
@@ -673,4 +785,10 @@ function applyLibrary(data) {
   } catch {
     $('#content').innerHTML = '<div class="loading">ライブラリの読み込みに失敗しました。サーバが起動しているか確認してください。</div>';
   }
+  refreshDevices();
+  setInterval(refreshDevices, 10000); // 抜き差しを 10 秒ごとに反映
+
+  // ページが開いている間サーバに接続を張る (--exit-on-close 起動時、
+  // 全ページが閉じられたらサーバが自動終了するための生存信号)
+  if (typeof EventSource !== 'undefined') new EventSource('/api/presence');
 })();

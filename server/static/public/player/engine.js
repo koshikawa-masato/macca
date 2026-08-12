@@ -12,12 +12,18 @@ import { decodeAiff } from './decode-aiff.js';
 import { probeSampleRate } from './probe.js';
 import { computeTrackGain } from './loudness.js';
 import { loadAlac, decodeAlacTrack } from './alac.js';
+import { createStreamReader } from './stream.js';
 
 const ENGINE_EXTS = new Set([
   '.mp3', '.aac', '.m4a', '.m4b', '.flac', '.wav', '.aif', '.aiff', '.aifc',
 ]);
 const GAIN_CACHE_KEY = 'macca-track-gains';
 const GAIN_CACHE_MAX = 5000;
+
+// ストリーミング再生: 一度にデコードする窓と先行デコード量 (秒)。
+// FLAC/ALAC/WAV/AIFF はこの窓単位で動的にデコードし、再生済み分は解放する
+const STREAM_WINDOW_SEC = 15;
+const STREAM_AHEAD_SEC = 30;
 
 // これより長いトラックは全体デコードせず <audio> ストリーミングに任せる
 // (全体デコードは開始が遅くメモリも食う: 44.1kHz ステレオで約 21MB/分)
@@ -68,12 +74,12 @@ export class AudioEngine {
 
   get playingTrack() { return this.current?.track ?? null; }
   get paused() { return this.ctx ? this.ctx.state !== 'running' : true; }
-  get duration() { return this.current?.buffer.duration ?? 0; }
+  get duration() { return this.current?.duration ?? 0; }
 
   get currentTime() {
     if (!this.current || !this.ctx) return 0;
     const t = this.ctx.currentTime - this.current.startTime;
-    return Math.min(Math.max(t, 0), this.current.buffer.duration);
+    return Math.min(Math.max(t, 0), this.current.duration);
   }
 
   /**
@@ -92,6 +98,10 @@ export class AudioEngine {
     const gen = ++this._gen;
     // 「次の曲へ」で選ばれた曲なら、先読み済みの取得/デコード結果を使い回す
     const reuse = this.next && this.next.track === track && !this.next.handoff ? this.next : null;
+    if (reuse) {
+      this._unscheduleNext();
+      this.next = null; // teardown でリーダーを破棄されないよう切り離す
+    }
     this._teardownPlayback();
 
     let decoded = null;
@@ -99,7 +109,7 @@ export class AudioEngine {
       const entry = reuse.entry ?? await this._ensureNextDecoded(reuse, gen);
       if (gen !== this._gen) return;
       if (entry && !entry.error) {
-        decoded = { buffer: entry.buffer, trackGain: entry.trackGain };
+        decoded = entry; // buffer / reader どちらの形態もそのまま使う
       }
     }
     if (!decoded) {
@@ -107,7 +117,7 @@ export class AudioEngine {
     }
     if (gen !== this._gen) return; // 待っている間に別の再生が始まった
 
-    await this._ensureContext(decoded.buffer.sampleRate);
+    await this._ensureContext(decoded.reader?.sampleRate ?? decoded.buffer.sampleRate);
     if (gen !== this._gen) return;
     if (this.ctx.state !== 'running') await this.ctx.resume().catch(() => {});
 
@@ -135,14 +145,26 @@ export class AudioEngine {
     // OS にコンテキストを止められた状態からでも必ず音が出るよう復帰させる
     this.kickContext();
     const cur = this.current;
-    const offset = Math.min(Math.max(seconds, 0), cur.buffer.duration - 0.05);
-    this._cancelSource(cur.source);
-    this._unscheduleNext();
+    const offset = Math.min(Math.max(seconds, 0), cur.duration - 0.05);
     const now = this.ctx.currentTime;
-    cur.source = this._makeSource(cur.buffer, cur.gainNode);
-    cur.source.onended = this._makeEndedHandler(cur.source, this._gen);
-    cur.source.start(now, offset);
-    cur.startTime = now - offset;
+    this._unscheduleNext();
+
+    if (cur.kind === 'stream') {
+      // スケジュール済みセグメントを破棄し、シーク位置から窓読みをやり直す
+      for (const seg of cur.segments) this._cancelSource(seg.source);
+      cur.segments = [];
+      clearTimeout(cur.pumpTimer);
+      cur.epoch++;
+      cur.startTime = now - offset;
+      cur.nextSample = Math.floor(offset * cur.reader.sampleRate);
+      this._pumpStream(this._gen);
+    } else {
+      this._cancelSource(cur.source);
+      cur.source = this._makeSource(cur.buffer, cur.gainNode);
+      cur.source.onended = this._makeEndedHandler(cur.source, this._gen);
+      cur.source.start(now, offset);
+      cur.startTime = now - offset;
+    }
     // 新しい位置に合わせて次曲の連結とデコードタイマーを組み直す
     this._scheduleNextIfReady();
     this._schedulePrefetch(this._gen);
@@ -236,8 +258,53 @@ export class AudioEngine {
     return this._decodeBytes(track, bytes, { forPlayback });
   }
 
+  /**
+   * ストリーミング可能な形式なら窓読みリーダーを作る (全体を展開しない)。
+   * 対象外・解析失敗・レート不一致は null → 全体デコードにフォールバック。
+   */
+  async _tryCreateReader(track, bytes, forPlayback) {
+    const ext = track.ext;
+    if (!['.flac', '.m4a', '.m4b', '.wav', '.aif', '.aiff', '.aifc'].includes(ext)) return null;
+    let alacModule = null;
+    let decodeFn = null;
+    let ctxSampleRate = 0;
+    if (ext === '.m4a' || ext === '.m4b') {
+      const demuxed = demuxMp4(bytes);
+      if (demuxed?.codec !== 'alac' || !demuxed.cookie) return null; // AAC は全体デコードへ
+      alacModule = await this._alacModule();
+    } else if (ext === '.flac') {
+      // FLAC はネイティブデコーダに窓を渡すため、コンテキストが音源レートであることが前提
+      const rate = probeSampleRate(bytes, ext)?.sampleRate;
+      if (!rate) return null;
+      if (forPlayback) await this._ensureContext(rate);
+      else if (!this.ctx) await this._ensureContext(rate);
+      if (this.ctx.sampleRate !== rate) return null;
+      ctxSampleRate = this.ctx.sampleRate;
+      decodeFn = (ab) => this.ctx.decodeAudioData(ab);
+    }
+    return createStreamReader(track, bytes, { alacModule, decodeAudioData: decodeFn, ctxSampleRate });
+  }
+
+  /** ストリーム再生用の正規化ゲイン (キャッシュ or 先頭 30 秒からの実測) */
+  async _gainForStream(track, reader) {
+    const gains = this._loadGains();
+    let g = gains[track.id];
+    if (typeof g !== 'number') {
+      const win = await reader.readWindow(0, Math.min(reader.totalSamples, reader.sampleRate * 30));
+      g = Math.round(computeTrackGain(win.channelData, reader.sampleRate) * 1000) / 1000;
+      gains[track.id] = g;
+      this._scheduleGainsSave();
+    }
+    return g;
+  }
+
   /** 取得済みバイト列からデコードする (_prefetchNext が先に fetch だけ済ませるため分離) */
   async _decodeBytes(track, bytes, { forPlayback = false } = {}) {
+    const reader = await this._tryCreateReader(track, bytes, forPlayback);
+    if (reader) {
+      const trackGain = await this._gainForStream(track, reader);
+      return { reader, trackGain };
+    }
     const ext = track.ext;
     let buffer;
 
@@ -333,18 +400,108 @@ export class AudioEngine {
   }
 
   _startCurrent(track, entry, offset, when) {
+    if (entry.reader) {
+      this._startStream(track, entry, offset, when);
+      return;
+    }
     const gainNode = entry.gainNode ?? this._makeGainNode(entry.trackGain);
     const source = entry.source ?? this._makeSource(entry.buffer, gainNode);
     if (!entry.source) source.start(when, offset);
     this.current = {
       track,
+      kind: 'buffer',
       buffer: entry.buffer,
+      duration: entry.buffer.duration,
       trackGain: entry.trackGain,
       gainNode,
       source,
       startTime: when - offset,
     };
     source.onended = this._makeEndedHandler(source, this._gen);
+  }
+
+  /** ストリーミング再生の開始: 窓読みリーダーから動的にデコードして連結する */
+  _startStream(track, entry, offset, when) {
+    const reader = entry.reader;
+    const gainNode = entry.gainNode ?? this._makeGainNode(entry.trackGain);
+    const cur = {
+      track,
+      kind: 'stream',
+      reader,
+      duration: reader.totalSamples / reader.sampleRate,
+      trackGain: entry.trackGain,
+      gainNode,
+      startTime: when - offset,
+      segments: [],
+      nextSample: Math.floor(offset * reader.sampleRate),
+      epoch: 0,
+      pumping: false,
+      pumpTimer: null,
+      buffer: null,
+      source: null,
+    };
+    // ギャップレス連結で先頭セグメントがスケジュール済みならそのまま引き継ぐ
+    if (entry.source && entry.firstBuffer) {
+      cur.segments.push({ source: entry.source, startSample: 0, length: entry.firstBuffer.length });
+      cur.nextSample = entry.firstBuffer.length;
+    }
+    this.current = cur;
+    this._pumpStream(this._gen);
+  }
+
+  /**
+   * ストリーム再生の心臓部: 再生位置の STREAM_AHEAD_SEC 先までデコードして
+   * サンプル精度で連結し、再生済みセグメントの参照を捨てる (動的確保・動的解放)
+   */
+  async _pumpStream(gen) {
+    const cur = this.current;
+    if (!cur || cur.kind !== 'stream' || gen !== this._gen || cur.pumping) return;
+    cur.pumping = true;
+    const epoch = cur.epoch;
+    try {
+      const rate = cur.reader.sampleRate;
+      while (gen === this._gen && this.current === cur && epoch === cur.epoch) {
+        if (cur.nextSample >= cur.reader.totalSamples) {
+          this._armStreamEnd(cur, gen);
+          return;
+        }
+        const played = (this.ctx.currentTime - cur.startTime) * rate;
+        if (cur.nextSample >= played + STREAM_AHEAD_SEC * rate) break; // 十分先までデコード済み
+        const win = await cur.reader.readWindow(cur.nextSample, Math.floor(STREAM_WINDOW_SEC * rate));
+        if (gen !== this._gen || this.current !== cur || epoch !== cur.epoch) return;
+        if (!win.length) { // これ以上読めない: ここを終端として扱う
+          cur.duration = cur.nextSample / rate;
+          this._armStreamEnd(cur, gen);
+          return;
+        }
+        const buf = channelsToBuffer(win.channelData, win.length, rate);
+        const source = this._makeSource(buf, cur.gainNode);
+        source.start(cur.startTime + cur.nextSample / rate);
+        cur.segments.push({ source, startSample: cur.nextSample, length: win.length });
+        cur.nextSample += win.length;
+        // 再生済みセグメントを解放 (参照を切れば AudioBuffer は GC される)
+        const done = played - rate; // 1 秒の余裕
+        while (cur.segments.length > 1 &&
+               cur.segments[0].startSample + cur.segments[0].length < done) {
+          cur.segments.shift();
+        }
+      }
+      // まだ途中: 少し先でポンプを再実行
+      if (gen === this._gen && this.current === cur && epoch === cur.epoch) {
+        clearTimeout(cur.pumpTimer);
+        cur.pumpTimer = setTimeout(() => this._pumpStream(gen), (STREAM_AHEAD_SEC / 2) * 1000);
+      }
+    } finally {
+      cur.pumping = false;
+    }
+  }
+
+  /** 最終セグメントに曲終端ハンドラを付ける */
+  _armStreamEnd(cur, gen) {
+    const last = cur.segments[cur.segments.length - 1];
+    if (last && !last.source.onended) {
+      last.source.onended = this._makeEndedHandler(last.source, gen);
+    }
   }
 
   _cancelSource(source) {
@@ -371,11 +528,21 @@ export class AudioEngine {
   _teardownPlayback() {
     clearTimeout(this._prefetchTimer);
     if (this.current) {
-      this._cancelSource(this.current.source);
-      try { this.current.gainNode.disconnect(); } catch { /* ignore */ }
+      const cur = this.current;
+      if (cur.kind === 'stream') {
+        cur.epoch++;
+        clearTimeout(cur.pumpTimer);
+        for (const seg of cur.segments) this._cancelSource(seg.source);
+        cur.segments = [];
+        cur.reader.destroy?.();
+      } else {
+        this._cancelSource(cur.source);
+      }
+      try { cur.gainNode.disconnect(); } catch { /* ignore */ }
       this.current = null;
     }
     this._unscheduleNext();
+    this.next?.entry?.reader?.destroy?.();
     this.next = null;
   }
 
@@ -413,7 +580,8 @@ export class AudioEngine {
     }
 
     // リピート 1 曲などで現曲と同じトラックならデコード結果を使い回す
-    if (track === this.current?.track) {
+    // (ストリーム再生中はリーダーを共有できないため通常の再取得に任せる)
+    if (track === this.current?.track && this.current.kind === 'buffer') {
       this.next = {
         track,
         entry: { buffer: this.current.buffer, trackGain: this.current.trackGain },
@@ -437,7 +605,15 @@ export class AudioEngine {
       const bytes = await next.bytesPromise;
       if (!bytes || bytes.error) return { error: bytes?.error ?? new Error('fetch failed') };
       try {
-        return await this._decodeBytes(next.track, bytes);
+        const entry = await this._decodeBytes(next.track, bytes);
+        if (entry.reader) {
+          // ギャップレス連結用に先頭窓だけ AudioBuffer 化しておく
+          const rate = entry.reader.sampleRate;
+          const win = await entry.reader.readWindow(0,
+            Math.min(entry.reader.totalSamples, Math.floor(STREAM_WINDOW_SEC * rate)));
+          entry.firstBuffer = channelsToBuffer(win.channelData, win.length, rate);
+        }
+        return entry;
       } catch (err) {
         return { error: err };
       }
@@ -463,10 +639,12 @@ export class AudioEngine {
   _scheduleNextIfReady() {
     const next = this.next;
     if (!next?.entry || next.entry.error || next.source || !this.current) return;
-    const endTime = this.current.startTime + this.current.buffer.duration;
+    const buf = next.entry.firstBuffer ?? next.entry.buffer;
+    if (!buf) return;
+    const endTime = this.current.startTime + this.current.duration;
     if (endTime <= this.ctx.currentTime) return; // 終端を過ぎている: _advance に任せる
     const gainNode = this._makeGainNode(next.entry.trackGain);
-    const source = this._makeSource(next.entry.buffer, gainNode);
+    const source = this._makeSource(buf, gainNode);
     source.start(endTime);
     next.source = source;
     next.entry.gainNode = gainNode;
@@ -478,6 +656,12 @@ export class AudioEngine {
     const prev = this.current;
     const next = this.next;
     if (prev) {
+      if (prev.kind === 'stream') {
+        prev.epoch++;
+        clearTimeout(prev.pumpTimer);
+        prev.segments = [];
+        prev.reader.destroy?.();
+      }
       try { prev.gainNode.disconnect(); } catch { /* ignore */ }
       this.current = null;
     }
@@ -507,7 +691,7 @@ export class AudioEngine {
     let startTime = now;
     if (next.source && prev) {
       // サンプル精度でスケジュール済み: 実際の開始時刻は前曲の終端
-      startTime = prev.startTime + prev.buffer.duration;
+      startTime = prev.startTime + prev.duration;
     }
     this.next = null;
     this._startCurrent(next.track, entry, 0, startTime);
@@ -515,6 +699,20 @@ export class AudioEngine {
     this._prefetchNext(gen);
     this._schedulePrefetch(gen);
   }
+}
+
+/** チャンネル別 Float32Array 群を AudioBuffer にする (窓読みセグメント用) */
+function channelsToBuffer(channelData, length, sampleRate) {
+  const buffer = new AudioBuffer({
+    numberOfChannels: channelData.length,
+    length,
+    sampleRate,
+  });
+  channelData.forEach((data, ch) => {
+    buffer.copyToChannel(data.length === length && data.byteOffset === 0
+      ? data : new Float32Array(data.subarray ? data.subarray(0, length) : data), ch);
+  });
+  return buffer;
 }
 
 /** {channelData, sampleRate, length} 形式の PCM を AudioBuffer にする */

@@ -805,4 +805,6 @@ function applyLibrary(data) {
   // ページが開いている間サーバに接続を張る (--exit-on-close 起動時、
   // 全ページが閉じられたらサーバが自動終了するための生存信号)
   if (typeof EventSource !== 'undefined') new EventSource('/api/presence');
+
+  window.__macca = { engine, state }; // デバッグ・自動テスト用フック
 })();

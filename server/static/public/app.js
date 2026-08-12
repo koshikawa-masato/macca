@@ -22,6 +22,7 @@ const state = {
   playMode: 'album',
   shuffleBag: [],         // アルバムランダムの残り曲 (一巡するまで再シャッフルしない)
   playing: null,          // 再生中トラック
+  loading: false,         // エンジンのfetch+デコード待ち
   transcoding: false,
   mode: 'engine',         // engine (Web Audio) | element (<audio> フォールバック)
   normalize: localStorage.getItem('macca-normalize') === '1',
@@ -438,15 +439,23 @@ function playTrack(t) {
     state.mode = 'engine';
     audio.pause();
     audio.removeAttribute('src');
-    engine.play(t).catch((err) => {
+    state.loading = true; // 大きなロスレスはfetch+デコードに数秒かかるため表示で示す
+    engine.play(t).then(() => {
+      if (state.playing === t) {
+        state.loading = false;
+        updatePlayButton();
+      }
+    }).catch((err) => {
       console.warn('エンジン再生に失敗、<audio> にフォールバックします:', err);
       if (state.playing === t) {
+        state.loading = false;
         playViaElement(t);
         updateNowPlayingUI(t);
       }
     });
   } else {
     engine?.stop();
+    state.loading = false;
     playViaElement(t);
   }
   updateNowPlayingUI(t);
@@ -503,7 +512,7 @@ function togglePlay() {
 }
 
 function updatePlayButton() {
-  $('#btn-play').textContent = isPaused() ? '▶' : '⏸';
+  $('#btn-play').textContent = state.loading ? '…' : isPaused() ? '▶' : '⏸';
 }
 
 function updateMediaSession(t) {

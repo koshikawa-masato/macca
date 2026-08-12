@@ -46,6 +46,16 @@ export class AudioEngine {
     this._alacPromise = null;
     this._gains = null;
     this._gainsSaveTimer = null;
+    this._bufferCache = new Map(); // trackId -> {buffer, trackGain} 直近のデコード結果
+  }
+
+  /** デコード済みバッファの小さな LRU (再クリック・前の曲へ戻る操作を即時にする) */
+  _cachePut(id, buffer, trackGain) {
+    this._bufferCache.delete(id);
+    this._bufferCache.set(id, { buffer, trackGain });
+    while (this._bufferCache.size > 2) {
+      this._bufferCache.delete(this._bufferCache.keys().next().value);
+    }
   }
 
   /** このエンジンでデコード・再生できる形式・長さか */
@@ -199,6 +209,13 @@ export class AudioEngine {
    * forPlayback 時のみ AudioContext を音源レートで作り直してよい。
    */
   async _decode(track, { forPlayback = false } = {}) {
+    const cached = this._bufferCache.get(track.id);
+    if (cached) {
+      this._cachePut(track.id, cached.buffer, cached.trackGain); // LRU 更新
+      if (forPlayback) await this._ensureContext(cached.buffer.sampleRate);
+      // gainNode/source は呼び出し側が書き足すため、新しいオブジェクトで返す
+      return { buffer: cached.buffer, trackGain: cached.trackGain };
+    }
     const ext = track.ext;
     const bytes = await this._fetchBytes(track);
     let buffer;
@@ -218,6 +235,7 @@ export class AudioEngine {
     }
 
     const trackGain = this._gainFor(track, buffer);
+    this._cachePut(track.id, buffer, trackGain);
     return { buffer, trackGain };
   }
 

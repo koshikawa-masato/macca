@@ -731,6 +731,51 @@ function renderDevices() {
   }));
 }
 
+// ---- デバッグモード (メモリ・CPU 表示) --------------------------------------
+
+let debugTimer = null;
+
+async function updateDebugPanel() {
+  const panel = $('#debug-panel');
+  const lines = [];
+  try {
+    const st = await (await fetch('/api/stats')).json();
+    const cpu = st.cpu >= 0 ? `${st.cpu.toFixed(1)}%` : '—';
+    lines.push(`サーバ: ${(st.rss / 1048576).toFixed(1)} MB · CPU ${cpu}`);
+  } catch {
+    lines.push('サーバ: 取得失敗');
+  }
+  if (performance.memory) {
+    lines.push(`ブラウザ: ヒープ ${(performance.memory.usedJSHeapSize / 1048576).toFixed(1)} MB`);
+  }
+  if (engine?.current) {
+    const c = engine.current;
+    lines.push(c.kind === 'stream'
+      ? `エンジン: stream · セグメント ${c.segments.length} 保持`
+      : 'エンジン: buffer (全体デコード)');
+  }
+  panel.textContent = lines.join('\n');
+}
+
+function setDebugMode(on) {
+  const panel = $('#debug-panel');
+  clearInterval(debugTimer);
+  debugTimer = null;
+  panel.hidden = !on;
+  if (on) {
+    updateDebugPanel();
+    debugTimer = setInterval(updateDebugPanel, 3000);
+  }
+  localStorage.setItem('macca-debug', on ? '1' : '0');
+}
+
+{
+  const check = $('#debug-check');
+  check.checked = localStorage.getItem('macca-debug') === '1';
+  if (check.checked) setDebugMode(true);
+  check.addEventListener('change', () => setDebugMode(check.checked));
+}
+
 // ---- 検索 / ナビゲーション ------------------------------------------------
 
 let searchTimer = null;

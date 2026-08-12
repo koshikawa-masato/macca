@@ -173,6 +173,10 @@ type appState struct {
 	presenceMu    sync.Mutex
 	presenceCount int
 	presenceTimer *time.Timer
+
+	statsMu    sync.Mutex
+	statsCPU   time.Duration
+	statsAt    time.Time
 }
 
 type options struct {
@@ -391,6 +395,8 @@ func (s *appState) serveAPI(w http.ResponseWriter, r *http.Request, useCache boo
 		s.serveLibrary(w)
 	case p == "/api/presence" && r.Method == http.MethodGet:
 		s.servePresence(w, r)
+	case p == "/api/stats" && r.Method == http.MethodGet:
+		s.serveStats(w)
 	case p == "/api/devices" && r.Method == http.MethodGet:
 		s.serveDevices(w)
 	case p == "/api/source" && r.Method == http.MethodPost:
@@ -1811,6 +1817,30 @@ func (s *appState) resolveTrackPath(t track) (string, bool) {
 	base := filepath.Clean(src.Dir)
 	full := filepath.Clean(filepath.Join(base, t.Path))
 	return full, full == base || strings.HasPrefix(full, base+string(filepath.Separator))
+}
+
+// デバッグ用: サーバプロセスの常駐メモリと CPU 使用率 (前回呼び出しからの平均)
+func (s *appState) serveStats(w http.ResponseWriter) {
+	s.statsMu.Lock()
+	now := time.Now()
+	cpu := processCPUTime()
+	percent := -1.0
+	if !s.statsAt.IsZero() && cpu > 0 {
+		wall := now.Sub(s.statsAt)
+		if wall > 0 {
+			percent = float64(cpu-s.statsCPU) / float64(wall) * 100
+			if percent < 0 {
+				percent = 0
+			}
+		}
+	}
+	s.statsCPU = cpu
+	s.statsAt = now
+	s.statsMu.Unlock()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"rss": processRSS(),
+		"cpu": percent,
+	})
 }
 
 // ブラウザ接続の監視 (--exit-on-close): フロントが張る SSE 接続でページ数を数え、

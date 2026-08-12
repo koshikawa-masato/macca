@@ -280,6 +280,23 @@ function servePresence(req, res, exitOnClose) {
   });
 }
 
+// ---- デバッグ用: プロセスのメモリ・CPU 使用率 --------------------------------
+
+const statsState = { lastCpu: null, lastAt: 0 };
+
+function serveStats(res) {
+  const now = Date.now();
+  const cpu = process.cpuUsage();
+  let percent = -1;
+  if (statsState.lastCpu && now > statsState.lastAt) {
+    const usedMicros = (cpu.user + cpu.system) - (statsState.lastCpu.user + statsState.lastCpu.system);
+    percent = Math.max(0, usedMicros / ((now - statsState.lastAt) * 1000) * 100);
+  }
+  statsState.lastCpu = cpu;
+  statsState.lastAt = now;
+  sendJson(res, 200, { rss: process.memoryUsage().rss, cpu: percent });
+}
+
 // ---- デバイス (リムーバブルストレージ) -------------------------------------
 
 async function serveDevices(res) {
@@ -507,6 +524,7 @@ export async function createServer(rootDir, { useCache = true, deviceLister, ext
         return serveLibrary(res);
       }
       if (p === '/api/presence') return servePresence(req, res, exitOnClose);
+      if (p === '/api/stats') return serveStats(res);
       if (p === '/api/devices') return serveDevices(res);
       if (p === '/api/source' && req.method === 'POST') {
         return addDeviceSource(req, res, useCache);

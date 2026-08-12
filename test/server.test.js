@@ -98,6 +98,15 @@ test('GET /api/artwork/:id が埋め込みアートを返す', async () => {
   }
 });
 
+test('GET /api/stats がメモリ・CPU情報を返す', async () => {
+  await fetch(`${base}/api/stats`); // 1回目でCPU計測の基準を作る
+  const res = await fetch(`${base}/api/stats`);
+  assert.equal(res.status, 200);
+  const json = await res.json();
+  assert.ok(typeof json.rss === 'number' && json.rss > 0, 'rss はバイト数');
+  assert.ok(typeof json.cpu === 'number', 'cpu は数値 (未対応環境は -1)');
+});
+
 test('存在しない ID は 404', async () => {
   const res = await fetch(`${base}/api/stream/deadbeefdeadbeef`);
   assert.equal(res.status, 404);

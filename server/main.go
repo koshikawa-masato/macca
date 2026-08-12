@@ -21,6 +21,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"runtime"
+	runtimedebug "runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -537,6 +538,8 @@ func (s *appState) rescan(useCache bool) error {
 		s.mu.Unlock()
 	}
 	s.rebuildIndex()
+	// スキャン中の一時確保 (タグ読み) を OS に返して待機時 RSS を抑える
+	runtimedebug.FreeOSMemory()
 	return nil
 }
 
@@ -1305,9 +1308,9 @@ func parseFLAC(f *os.File, fileSize int64) metadataResult {
 		if size < 0 || size > 64*1024*1024 {
 			break
 		}
-		b := readAt(f, dataPos, size)
 		switch blockType {
 		case 0:
+			b := readAt(f, dataPos, min64(size, 34))
 			if len(b) >= 18 {
 				sampleRate := uint32(b[10])<<12 | uint32(b[11])<<4 | uint32(b[12]>>4)
 				total := (uint64(b[13]&0x0f) << 32) | uint64(binary.BigEndian.Uint32(b[14:18]))
@@ -1317,9 +1320,12 @@ func parseFLAC(f *os.File, fileSize int64) metadataResult {
 				}
 			}
 		case 4:
-			parseVorbisComment(b, &r.Tags)
+			parseVorbisComment(readAt(f, dataPos, size), &r.Tags)
 		case 6:
-			if art := parseFLACPicture(b, dataPos); art != nil {
+			// 画像データ本体は読まない: ヘッダ部 (MIME/説明/サイズ) だけで
+			// オフセットと長さが決まる。巨大アートを丸ごと確保しない
+			b := readAt(f, dataPos, min64(size, 8192))
+			if art := parseFLACPicture(b, dataPos, size); art != nil {
 				r.Art = art
 			}
 		}
@@ -1376,7 +1382,8 @@ func parseVorbisComment(b []byte, t *tags) {
 	}
 }
 
-func parseFLACPicture(b []byte, absStart int64) *artInfo {
+// b はブロック先頭部だけでよい (blockSize はブロック全体のサイズ)
+func parseFLACPicture(b []byte, absStart int64, blockSize int64) *artInfo {
 	if len(b) < 32 {
 		return nil
 	}
@@ -1391,11 +1398,11 @@ func parseFLACPicture(b []byte, absStart int64) *artInfo {
 	descLen := int(binary.BigEndian.Uint32(b[p : p+4]))
 	p += 4 + descLen + 16
 	if p+4 > len(b) {
-		return nil
+		return nil // 説明文が異常に長い場合はアートなし扱い
 	}
 	dataLen := int(binary.BigEndian.Uint32(b[p : p+4]))
 	p += 4
-	if dataLen < 0 || p+dataLen > len(b) {
+	if dataLen < 0 || int64(p)+int64(dataLen) > blockSize {
 		return nil
 	}
 	offset := absStart + int64(p)

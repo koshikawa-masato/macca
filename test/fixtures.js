@@ -424,4 +424,7 @@ export async function writeParityFixtures(dir) {
     buildId3v22Mp3({ title: '古いタグ', artist: '旧世代', album: 'V22集' }));
   await writeFile(path.join(dir, 'unsync.mp3'),
     buildUnsyncMp3({ title: '非同期回避', artist: 'アンシンク' }, TINY_PNG));
+  // MP4 (ilst の ©タグ / trkn / covr)
+  await writeFile(path.join(dir, 'alac-tags.m4a'),
+    buildM4a({ title: '林檎可逆', artist: '圧縮なし子', album: 'ALAC集成', track: 4, year: 2019 }, TINY_PNG));
 }

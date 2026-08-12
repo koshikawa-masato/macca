@@ -1442,17 +1442,17 @@ func parseMP4(f *os.File, fileSize int64) metadataResult {
 					r.Codec = strings.TrimSpace(fmtName)
 				}
 			}
-		case "©nam":
+		case "\xa9nam":
 			setIfEmpty(&r.Tags.Title, readMP4Text(f, a))
-		case "©ART":
+		case "\xa9ART":
 			setIfEmpty(&r.Tags.Artist, readMP4Text(f, a))
 		case "aART":
 			setIfEmpty(&r.Tags.AlbumArtist, readMP4Text(f, a))
-		case "©alb":
+		case "\xa9alb":
 			setIfEmpty(&r.Tags.Album, readMP4Text(f, a))
-		case "©gen":
+		case "\xa9gen":
 			setIfEmpty(&r.Tags.Genre, readMP4Text(f, a))
-		case "©day":
+		case "\xa9day":
 			if r.Tags.Year == nil {
 				r.Tags.Year = parseYear(readMP4Text(f, a))
 			}

@@ -54,6 +54,12 @@ test('Node実装: 意地悪ケースのメタデータを正しく読む', async
   assert.equal(byName['v22.mp3'].artist, '旧世代', 'ID3v2.2 アーティスト');
   assert.equal(byName['unsync.mp3'].title, '非同期回避', 'unsynchronisation');
   assert.equal(byName['unsync.mp3'].hasArt, true, 'unsync タグ内のアートワーク');
+  const m4a = byName['alac-tags.m4a'];
+  assert.equal(m4a.title, '林檎可逆', 'MP4 ©nam');
+  assert.equal(m4a.artist, '圧縮なし子', 'MP4 ©ART');
+  assert.equal(m4a.album, 'ALAC集成', 'MP4 ©alb');
+  assert.equal(m4a.track, 4, 'MP4 trkn');
+  assert.equal(m4a.codec, 'alac', 'MP4 コーデック判別');
 });
 
 test('Go実装: /api/library の出力が Node と完全一致する', { skip: !process.env.MACCA_SERVER_BIN }, async () => {

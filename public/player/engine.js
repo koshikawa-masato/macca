@@ -358,6 +358,12 @@ export class AudioEngine {
     if (gen !== this._gen) return;
     if (!entry || entry.error) {
       this.next = null;
+      if (entry?.error && next.track) {
+        // 次曲のデコードに失敗しても再生列を止めない: <audio> 再生に委譲する
+        console.warn('次曲のデコードに失敗したため <audio> 再生に切り替えます:', entry.error);
+        this.onhandoff?.(next.track);
+        return;
+      }
       this.onqueueend?.();
       return;
     }

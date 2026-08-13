@@ -661,19 +661,23 @@ export async function createServer(rootDir, { useCache = true, deviceLister, ext
   }
 
   // リムーバブルソース (SDカード等) を使用中はスリープさせない。
-  // 無アクセスが続くと外部ディスクが止まり、次の再生開始が起床待ちになるため
+  // 無アクセスが続くと外部ドライブが止まり、次の再生開始が起床待ちになるため。
+  // 同じ場所を読むと OS のキャッシュに当たって実デバイスに I/O が届かないので、
+  // 毎回ランダムな曲のランダムな位置を 4KB だけ読んで物理アクセスを発生させる
   const keepAwake = setInterval(async () => {
     for (const src of state.sources.values()) {
       if (!src.removable || src.tracks.length === 0) continue;
       try {
-        const fh = await open(path.join(src.dir, src.tracks[0].path), 'r');
-        await readAt(fh, 0, 4096);
+        const t = src.tracks[Math.floor(Math.random() * src.tracks.length)];
+        const fh = await open(path.join(src.dir, t.path), 'r');
+        const off = t.size > 4096 ? Math.floor(Math.random() * (t.size - 4096)) : 0;
+        await readAt(fh, off, 4096);
         await fh.close();
       } catch {
         // デバイスが抜かれている等: 無視
       }
     }
-  }, 5 * 60 * 1000);
+  }, 2 * 60 * 1000);
   keepAwake.unref?.();
 
   const server = http.createServer(async (req, res) => {

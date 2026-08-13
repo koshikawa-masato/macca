@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"io/fs"
 	"math"
 	"mime"
@@ -383,21 +384,33 @@ func newState(opts options) (*appState, error) {
 // macOS 等は無アクセスが続く外部ディスクを止めるため、次の曲の再生開始が
 // ドライブの起床待ち (数秒) になる。5 分ごとに数 KB 読んで防ぐ。
 func (s *appState) keepRemovableAwake() {
-	ticker := time.NewTicker(5 * time.Minute)
+	// 同じ場所を読むと OS のキャッシュに当たって実デバイスに I/O が届かず、
+	// 外部ドライブがスリープしてしまう。毎回ランダムな曲のランダムな位置を
+	// 4KB だけ読んで、確実に物理アクセスを発生させる
+	ticker := time.NewTicker(2 * time.Minute)
 	defer ticker.Stop()
 	buf := make([]byte, 4096)
 	for range ticker.C {
+		type target struct {
+			path string
+			size int64
+		}
 		s.mu.RLock()
-		var paths []string
+		var targets []target
 		for _, src := range s.sources {
 			if src.Removable && len(src.Tracks) > 0 {
-				paths = append(paths, filepath.Join(src.Dir, src.Tracks[0].Path))
+				t := src.Tracks[rand.IntN(len(src.Tracks))]
+				targets = append(targets, target{filepath.Join(src.Dir, t.Path), t.Size})
 			}
 		}
 		s.mu.RUnlock()
-		for _, p := range paths {
-			if f, err := os.Open(p); err == nil {
-				_, _ = f.Read(buf)
+		for _, t := range targets {
+			if f, err := os.Open(t.path); err == nil {
+				var off int64
+				if t.size > 4096 {
+					off = rand.Int64N(t.size - 4096)
+				}
+				_, _ = f.ReadAt(buf, off)
 				_ = f.Close()
 			}
 		}

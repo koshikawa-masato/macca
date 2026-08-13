@@ -1007,7 +1007,9 @@ $('#rescan').addEventListener('click', async () => {
 // ---- 初期化 ---------------------------------------------------------------
 
 // サーバが裏でスキャン中 (起動直後の固定ソース読み込み等) は
-// 完了までライブラリを追いかけて、終わった分を画面に合流させる
+// 完了までライブラリを追いかけて、終わった分を画面に合流させる。
+// 内容が変わったときだけ再描画する (毎回描き直すとアルバムグリッドの
+// <img> が作り直されてジャケットの読み直しが走り続けてしまう)
 let scanPollTimer = null;
 function watchScanning(data) {
   if (!data.scanning || scanPollTimer) return;
@@ -1019,7 +1021,11 @@ function watchScanning(data) {
         clearInterval(scanPollTimer);
         scanPollTimer = null;
       }
-      applyLibrary(json);
+      if (json.scannedAt !== state.scannedAt || !json.scanning) {
+        applyLibrary(json);
+      } else {
+        state.scanning = json.scanning;
+      }
     } catch {
       // サーバ再起動中など: 次の周期で再試行
     }
@@ -1032,6 +1038,7 @@ function applyLibrary(data) {
   state.dir = data.dir;
   state.sources = data.sources ?? [];
   state.scanning = Boolean(data.scanning);
+  state.scannedAt = data.scannedAt ?? null;
   watchScanning(data);
   // サーバ実装 (Go / JS) のバッジとバージョンを曲数の左に表示
   const badge = $('#impl-badge');

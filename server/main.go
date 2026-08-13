@@ -377,7 +377,7 @@ func newState(opts options) (*appState, error) {
 		return nil, err
 	}
 	if len(deferred) > 0 {
-		go func() { _ = state.rescanSources(opts.cache, deferred) }()
+		state.startScanJob(opts.cache, deferred)
 	}
 	go state.keepRemovableAwake()
 	return state, nil
@@ -606,23 +606,41 @@ func (s *appState) rescan(useCache bool) error {
 	return s.rescanSources(useCache, sources)
 }
 
-// rescanSources はソース群をスキャンする。別デバイス同士は並行実行して構わない
-// (直列に待たせない)。API から呼ぶ場合は goroutine に載せてすぐ応答し、
-// UI は scanning フラグで合流する
+// startScanJob はスキャンを裏で実行する。scanning フラグは goroutine ではなく
+// この場で立てる (応答に scanning:true が載らないと UI が完了を追いかけられない)
+func (s *appState) startScanJob(useCache bool, sources []*source) {
+	s.mu.Lock()
+	s.scanJobs++
+	s.scanning = true
+	s.mu.Unlock()
+	go func() {
+		defer s.endScanJob()
+		s.runScan(useCache, sources)
+	}()
+}
+
+func (s *appState) endScanJob() {
+	s.mu.Lock()
+	s.scanJobs--
+	if s.scanJobs == 0 {
+		s.scanning = false
+	}
+	s.mu.Unlock()
+}
+
+// rescanSources はソース群を同期的にスキャンする。別デバイス同士は並行実行して
+// 構わない (直列に待たせない)
 func (s *appState) rescanSources(useCache bool, sources []*source) error {
 	s.mu.Lock()
 	s.scanJobs++
 	s.scanning = true
 	s.mu.Unlock()
-	defer func() {
-		s.mu.Lock()
-		s.scanJobs--
-		if s.scanJobs == 0 {
-			s.scanning = false
-		}
-		s.mu.Unlock()
-	}()
+	defer s.endScanJob()
+	s.runScan(useCache, sources)
+	return nil
+}
 
+func (s *appState) runScan(useCache bool, sources []*source) {
 	for _, src := range sources {
 		// リムーバブルはキャッシュを残さない (プライバシー配慮)。
 		// ただし「固定」ソースはユーザーが記録を許可したものとして扱う
@@ -641,7 +659,6 @@ func (s *appState) rescanSources(useCache bool, sources []*source) error {
 	s.rebuildIndex()
 	// スキャン中の一時確保 (タグ読み) を OS に返して待機時 RSS を抑える
 	runtimedebug.FreeOSMemory()
-	return nil
 }
 
 func (s *appState) rebuildIndex() {
@@ -2284,7 +2301,7 @@ func (s *appState) addDeviceSource(w http.ResponseWriter, r *http.Request, useCa
 	s.mu.Unlock()
 	if scanTarget != nil {
 		// スキャンで応答を待たせない: 裏で実行し、UI は scanning を見て合流する
-		go func() { _ = s.rescanSources(useCache, []*source{scanTarget}) }()
+		s.startScanJob(useCache, []*source{scanTarget})
 	}
 	if pinChanged {
 		s.savePinnedDirs()
@@ -2317,7 +2334,7 @@ func (s *appState) setSourcePin(w http.ResponseWriter, r *http.Request, id strin
 	if changed {
 		if body.Pinned {
 			// キャッシュ付きで読み直し、次回起動時に速く読めるようにする (裏で実行)
-			go func() { _ = s.rescanSources(useCache, []*source{src}) }()
+			s.startScanJob(useCache, []*source{src})
 		} else {
 			// 固定解除: リムーバブルのプライバシー方針に戻すのでキャッシュを消す
 			deleteLibraryCache(dir)
@@ -2337,7 +2354,7 @@ func (s *appState) rescanSource(w http.ResponseWriter, id string, useCache bool)
 		return
 	}
 	// 裏で実行してすぐ応答する (UI は scanning を見て合流)
-	go func() { _ = s.rescanSources(useCache, []*source{src}) }()
+	s.startScanJob(useCache, []*source{src})
 	s.serveLibrary(w)
 }
 

@@ -54,7 +54,7 @@ export class AudioEngine {
     this._gainsSaveTimer = null;
     this._bufferCache = new Map(); // trackId -> {buffer, trackGain} 直近のデコード結果
     // 診断用カウンタ (デバッグモードで表示。フリーズ解析の手がかり)
-    this.stats = { play: 0, advance: 0, pump: 0, pumpLoop: 0, decodeNext: 0, schedule: 0 };
+    this.stats = { play: 0, advance: 0, pump: 0, pumpLoop: 0, decodeNext: 0, schedule: 0, watchdog: 0 };
   }
 
   /**
@@ -175,7 +175,8 @@ export class AudioEngine {
       cur.source.start(now, offset);
       cur.startTime = now - offset;
     }
-    // 新しい位置に合わせて次曲の連結とデコードタイマーを組み直す
+    // 新しい位置に合わせて終端の番人・次曲の連結・デコードタイマーを組み直す
+    this._armEndWatchdog(cur, this._gen);
     this._scheduleNextIfReady();
     this._schedulePrefetch(this._gen);
   }
@@ -404,6 +405,27 @@ export class AudioEngine {
     };
   }
 
+  /**
+   * 終端ウォッチドッグ: onended 一発に頼らず、実クロックで終端越えを確認して
+   * 曲送りする保険。onended が来ないケース (ハンドラを付ける前にソースが
+   * 鳴り終わっていた・終端時にセグメントが空・デコード停滞) でも止まらない。
+   */
+  _armEndWatchdog(cur, gen) {
+    clearTimeout(cur.endTimer);
+    const remain = (cur.startTime + cur.duration) - this.ctx.currentTime;
+    cur.endTimer = setTimeout(() => {
+      if (gen !== this._gen || this.current !== cur) return;
+      const left = (cur.startTime + cur.duration) - this.ctx.currentTime;
+      if (left > 0.05 || this.ctx.state !== 'running') {
+        // まだ終端前 (先行発火・一時停止中など): 測り直して張り直す
+        this._armEndWatchdog(cur, gen);
+        return;
+      }
+      this.stats.watchdog++;
+      this._advance(gen);
+    }, Math.max(0, remain * 1000) + 300);
+  }
+
   _startCurrent(track, entry, offset, when) {
     if (entry.reader) {
       this._startStream(track, entry, offset, when);
@@ -421,8 +443,10 @@ export class AudioEngine {
       gainNode,
       source,
       startTime: when - offset,
+      endTimer: null,
     };
     source.onended = this._makeEndedHandler(source, this._gen);
+    this._armEndWatchdog(this.current, this._gen);
   }
 
   /** ストリーミング再生の開始: 窓読みリーダーから動的にデコードして連結する */
@@ -442,6 +466,7 @@ export class AudioEngine {
       epoch: 0,
       pumping: false,
       pumpTimer: null,
+      endTimer: null,
       buffer: null,
       source: null,
     };
@@ -451,6 +476,7 @@ export class AudioEngine {
       cur.nextSample = entry.firstBuffer.length;
     }
     this.current = cur;
+    this._armEndWatchdog(cur, this._gen);
     this._pumpStream(this._gen);
   }
 
@@ -513,12 +539,14 @@ export class AudioEngine {
     }
   }
 
-  /** 最終セグメントに曲終端ハンドラを付ける */
+  /** 最終セグメントに曲終端ハンドラを付ける (空でもウォッチドッグが番をする) */
   _armStreamEnd(cur, gen) {
     const last = cur.segments[cur.segments.length - 1];
     if (last && !last.source.onended) {
       last.source.onended = this._makeEndedHandler(last.source, gen);
     }
+    // 途中終端 (読めなくなった等) で duration が変わった場合に合わせて張り直す
+    this._armEndWatchdog(cur, gen);
   }
 
   _cancelSource(source) {
@@ -546,6 +574,7 @@ export class AudioEngine {
     clearTimeout(this._prefetchTimer);
     if (this.current) {
       const cur = this.current;
+      clearTimeout(cur.endTimer);
       if (cur.kind === 'stream') {
         cur.epoch++;
         clearTimeout(cur.pumpTimer);
@@ -667,7 +696,12 @@ export class AudioEngine {
     if (!next || next.handoff || gen !== this._gen) return;
     if (!next.entry) {
       const entry = await this._ensureNextDecoded(next, gen);
-      if (gen !== this._gen || this.next !== next || entry.error) return;
+      if (gen !== this._gen || this.next !== next) return;
+      if (entry.error) {
+        // 連結はできないが、終端の _advance が <audio> 委譲などで面倒を見る
+        console.warn('次曲の先行デコードに失敗:', entry.error);
+        return;
+      }
     }
     this._scheduleNextIfReady();
   }
@@ -694,11 +728,21 @@ export class AudioEngine {
     const prev = this.current;
     const next = this.next;
     if (prev) {
+      clearTimeout(prev.endTimer);
       if (prev.kind === 'stream') {
         prev.epoch++;
         clearTimeout(prev.pumpTimer);
+        // 遅れて届く onended やウォッチドッグの二重発火で曲を飛ばさないよう無効化
+        // (音は終端まで鳴り終わっているので stop はしない)
+        for (const seg of prev.segments) {
+          seg.source._cancelled = true;
+          seg.source.onended = null;
+        }
         prev.segments = [];
         prev.reader.destroy?.();
+      } else if (prev.source) {
+        prev.source._cancelled = true;
+        prev.source.onended = null;
       }
       try { prev.gainNode.disconnect(); } catch { /* ignore */ }
       this.current = null;

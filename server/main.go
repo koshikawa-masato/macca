@@ -169,8 +169,7 @@ type appState struct {
 	tracks      []track
 	byID        map[string]track
 	scanning    bool
-	scanJobs    int        // 実行待ち + 実行中のスキャンジョブ数 (mu で保護)
-	scanMu      sync.Mutex // スキャン実行を直列化する
+	scanJobs    int // 実行中のスキャンジョブ数 (mu で保護)
 	scannedAt   string
 	ffmpeg      bool
 	folderArt   map[string]string
@@ -604,8 +603,9 @@ func (s *appState) rescan(useCache bool) error {
 	return s.rescanSources(useCache, sources)
 }
 
-// rescanSources はソース群を直列にスキャンする (scanMu で他のスキャンと排他)。
-// API から呼ぶ場合は goroutine に載せてすぐ応答し、UI は scanning フラグで合流する
+// rescanSources はソース群をスキャンする。別デバイス同士は並行実行して構わない
+// (直列に待たせない)。API から呼ぶ場合は goroutine に載せてすぐ応答し、
+// UI は scanning フラグで合流する
 func (s *appState) rescanSources(useCache bool, sources []*source) error {
 	s.mu.Lock()
 	s.scanJobs++
@@ -619,8 +619,6 @@ func (s *appState) rescanSources(useCache bool, sources []*source) error {
 		}
 		s.mu.Unlock()
 	}()
-	s.scanMu.Lock()
-	defer s.scanMu.Unlock()
 
 	for _, src := range sources {
 		// リムーバブルはキャッシュを残さない (プライバシー配慮)。

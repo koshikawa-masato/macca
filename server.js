@@ -144,15 +144,15 @@ async function scanSource(src, useCache = true) {
     (errors.length ? `, 読み取り失敗 ${errors.length} 件` : ''));
 }
 
-// スキャンは直列キューで実行する。API はキューに積んですぐ応答し、
-// フロントは scanning フラグを見てライブラリを追いかける (UI を固めない)
-let scanChain = Promise.resolve();
+// スキャンジョブは裏で並行実行する (別デバイス同士を直列に待たせない)。
+// API はジョブを起こしてすぐ応答し、フロントは scanning フラグを見て
+// ライブラリを追いかける (UI を固めない)
 let scanJobs = 0;
 
 function queueScan(srcs, useCache = true) {
   scanJobs++;
   state.scanning = true;
-  scanChain = scanChain.then(async () => {
+  return (async () => {
     for (const src of srcs) {
       try {
         await scanSource(src, useCache);
@@ -163,10 +163,9 @@ function queueScan(srcs, useCache = true) {
       }
     }
     rebuildIndex();
-  }).finally(() => {
+  })().finally(() => {
     if (--scanJobs === 0) state.scanning = false;
   });
-  return scanChain;
 }
 
 async function rescan(useCache = true, srcs = null) {

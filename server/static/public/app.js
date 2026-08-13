@@ -823,9 +823,11 @@ async function updateDebugPanel() {
     const s = engine.stats;
     const counters = `p${s.play} a${s.advance} d${s.decodeNext} s${s.schedule} P${s.pump}/${s.pumpLoop} W${s.watchdog ?? 0}`;
     lines.push(`内部: ${counters}`);
-    // フリーズしてもタブタイトルは残るので、診断の手がかりとして常時書き出す
-    const t = state.playing ? `${state.playing.title} — macca` : 'macca';
-    document.title = `${t} [${counters}]`;
+    // フリーズしてもタブタイトルは残るので、診断の手がかりとして書き出す。
+    // ただし再生中のみ (起動直後のタブ名にデバッグ文を入り込ませない)
+    document.title = state.playing
+      ? `${state.playing.title} — macca [${counters}]`
+      : 'macca — ローカル音楽ライブラリ';
   }
   panel.textContent = lines.join('\n');
 }

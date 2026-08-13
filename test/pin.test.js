@@ -159,6 +159,27 @@ test('サブフォルダ固定: デバイス配下のフォルダだけをソー
   assert.deepEqual(await readConfig(), { pinned: [] });
 });
 
+test('フォルダ参照: デバイス配下だけを辿れる', async () => {
+  // 最上位はデバイス一覧
+  const top = await (await fetch(`${base}/api/browse`)).json();
+  assert.equal(top.path, null);
+  assert.ok(top.dirs.some((d) => d.path === devDir && d.name === 'TEST-SD'));
+
+  // デバイス直下: サブフォルダが見え、親は null (デバイスルートが上限)
+  const root = await (await fetch(`${base}/api/browse?path=${encodeURIComponent(devDir)}`)).json();
+  assert.equal(root.path, devDir);
+  assert.equal(root.parent, null);
+  assert.ok(root.dirs.some((d) => d.name === 'music'));
+
+  // サブフォルダ: 親はデバイスルート
+  const sub = await (await fetch(`${base}/api/browse?path=${encodeURIComponent(path.join(devDir, 'music'))}`)).json();
+  assert.equal(sub.parent, devDir);
+
+  // デバイス外は 400
+  const bad = await fetch(`${base}/api/browse?path=${encodeURIComponent(libDir)}`);
+  assert.equal(bad.status, 400);
+});
+
 test('サブフォルダ固定: デバイス外のパスと実在しないフォルダは 400', async () => {
   const outside = await postJson(`${base}/api/source`, { path: libDir, pin: true });
   assert.equal(outside.status, 400);

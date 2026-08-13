@@ -16,7 +16,7 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { scanLibrary, deleteLibraryCache } from './lib/scan.js';
+import { scanLibrary, deleteLibraryCache, IGNORED_DIRS } from './lib/scan.js';
 import { MIME_BY_EXT } from './lib/metadata.js';
 import { readAt } from './lib/util.js';
 import { listRemovableVolumes } from './lib/devices.js';
@@ -363,6 +363,40 @@ function readJsonBody(req) {
   });
 }
 
+/** 接続中デバイス配下のフォルダ一覧 (フォルダ選択 UI 用)。デバイス外は見せない */
+async function serveBrowse(res, query) {
+  let volumes = [];
+  try {
+    volumes = await state.deviceLister();
+  } catch { /* デバイスなし扱い */ }
+  const reqPath = query.get('path');
+  if (!reqPath) {
+    // 最上位はデバイス一覧
+    return sendJson(res, 200, {
+      path: null,
+      parent: null,
+      dirs: volumes.map((v) => ({ name: v.label, path: path.resolve(v.path) })),
+    });
+  }
+  const resolved = path.resolve(reqPath);
+  const vol = volumes.find((v) => {
+    const root = path.resolve(v.path);
+    return root === resolved || resolved.startsWith(root + path.sep);
+  });
+  if (!vol) return sendJson(res, 400, { error: '接続中のデバイスではありません' });
+  let dirs = [];
+  try {
+    dirs = (await readdir(resolved, { withFileTypes: true }))
+      .filter((e) => e.isDirectory() && !e.name.startsWith('.') && !IGNORED_DIRS.has(e.name.toLowerCase()))
+      .map((e) => ({ name: e.name, path: path.join(resolved, e.name) }))
+      .sort((a, b) => (a.name < b.name ? -1 : 1));
+  } catch {
+    return sendJson(res, 400, { error: 'フォルダが見つかりません' });
+  }
+  const isRoot = path.resolve(vol.path) === resolved;
+  sendJson(res, 200, { path: resolved, parent: isRoot ? null : path.dirname(resolved), dirs });
+}
+
 /** 接続中デバイス (またはその配下のフォルダ) をソースとして追加してスキャンする */
 async function addDeviceSource(req, res, useCache) {
   const body = await readJsonBody(req);
@@ -641,6 +675,7 @@ export async function createServer(rootDir, { useCache = true, deviceLister, ext
       if (p === '/api/presence') return servePresence(req, res, exitOnClose);
       if (p === '/api/stats') return serveStats(res);
       if (p === '/api/devices') return serveDevices(res);
+      if (p === '/api/browse') return serveBrowse(res, url.searchParams);
       if (p === '/api/source' && req.method === 'POST') {
         return addDeviceSource(req, res, useCache);
       }

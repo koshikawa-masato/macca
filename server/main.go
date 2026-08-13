@@ -457,6 +457,8 @@ func (s *appState) serveAPI(w http.ResponseWriter, r *http.Request, useCache boo
 		s.serveStats(w)
 	case p == "/api/devices" && r.Method == http.MethodGet:
 		s.serveDevices(w)
+	case p == "/api/browse" && r.Method == http.MethodGet:
+		s.serveBrowse(w, r)
 	case p == "/api/source" && r.Method == http.MethodPost:
 		s.addDeviceSource(w, r, useCache)
 	case strings.HasPrefix(p, "/api/source/") && strings.HasSuffix(p, "/pin") && r.Method == http.MethodPost:
@@ -2133,6 +2135,67 @@ func listDevices() []device {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
 	return out
+}
+
+// serveBrowse は接続中デバイス配下のフォルダ一覧を返す (フォルダ選択 UI 用)。
+// デバイス外は見せない。
+func (s *appState) serveBrowse(w http.ResponseWriter, r *http.Request) {
+	type dirEntry struct {
+		Name string `json:"name"`
+		Path string `json:"path"`
+	}
+	type browseResp struct {
+		Path   *string    `json:"path"`
+		Parent *string    `json:"parent"`
+		Dirs   []dirEntry `json:"dirs"`
+	}
+	devices := listDevices()
+	q := r.URL.Query().Get("path")
+	if q == "" {
+		// 最上位はデバイス一覧
+		dirs := []dirEntry{}
+		for _, d := range devices {
+			p, _ := filepath.Abs(d.Path)
+			dirs = append(dirs, dirEntry{Name: d.Label, Path: p})
+		}
+		writeJSON(w, http.StatusOK, browseResp{Dirs: dirs})
+		return
+	}
+	reqPath, err := filepath.Abs(q)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "接続中のデバイスではありません"})
+		return
+	}
+	root := ""
+	for _, d := range devices {
+		p, _ := filepath.Abs(d.Path)
+		if p == reqPath || strings.HasPrefix(reqPath, p+string(filepath.Separator)) {
+			root = p
+			break
+		}
+	}
+	if root == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "接続中のデバイスではありません"})
+		return
+	}
+	entries, err := os.ReadDir(reqPath)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "フォルダが見つかりません"})
+		return
+	}
+	dirs := []dirEntry{}
+	for _, e := range entries {
+		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") || ignoredDirs[strings.ToLower(e.Name())] {
+			continue
+		}
+		dirs = append(dirs, dirEntry{Name: e.Name(), Path: filepath.Join(reqPath, e.Name())})
+	}
+	resp := browseResp{Path: &reqPath, Dirs: dirs}
+	if reqPath != root {
+		parent := filepath.Dir(reqPath)
+		resp.Parent = &parent
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *appState) addDeviceSource(w http.ResponseWriter, r *http.Request, useCache bool) {

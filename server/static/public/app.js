@@ -864,10 +864,7 @@ function setDebugMode(on) {
 
 // デバッグモード限定: マウント中デバイス配下の任意フォルダを固定ライブラリにする
 // (NAS 共有全体ではなく音楽フォルダだけを見たい場合など)
-$('#pin-add').addEventListener('click', async () => {
-  const input = $('#pin-path');
-  const p = input.value.trim();
-  if (!p) return;
+async function pinPath(p) {
   const btn = $('#pin-add');
   btn.disabled = true;
   btn.textContent = 'スキャン中…';
@@ -881,7 +878,7 @@ $('#pin-add').addEventListener('click', async () => {
     const json = await res.json();
     if (!res.ok) throw new Error(json.error ?? res.status);
     applyLibrary(json);
-    input.value = '';
+    $('#pin-path').value = '';
     toast('フォルダを固定ライブラリにしました');
   } catch (err) {
     toast(`固定に失敗しました: ${err.message}`);
@@ -890,6 +887,48 @@ $('#pin-add').addEventListener('click', async () => {
   btn.disabled = false;
   btn.textContent = '固定';
   refreshDevices();
+}
+
+$('#pin-add').addEventListener('click', () => {
+  const p = $('#pin-path').value.trim();
+  if (p) pinPath(p);
+});
+
+// フォルダブラウザ: /api/browse でデバイス配下だけを辿れる
+const browseState = { path: null, parent: null };
+
+async function openBrowse(p) {
+  try {
+    const res = await fetch(p ? `/api/browse?path=${encodeURIComponent(p)}` : '/api/browse');
+    const json = await res.json();
+    if (!res.ok) throw new Error(json.error ?? res.status);
+    browseState.path = json.path;
+    browseState.parent = json.parent;
+    $('#browse-path').textContent = json.path ?? 'デバイスを選択';
+    $('#browse-up').disabled = !json.path;
+    $('#browse-pin').disabled = !json.path;
+    const list = $('#browse-list');
+    list.innerHTML = json.dirs.length
+      ? json.dirs.map((d) => `<button class="browse-item" data-path="${esc(d.path)}">📁 ${esc(d.name)}</button>`).join('')
+      : '<div class="dev-empty">サブフォルダなし</div>';
+    list.querySelectorAll('.browse-item').forEach((b) =>
+      b.addEventListener('click', () => openBrowse(b.dataset.path)));
+    const dlg = $('#browse-dialog');
+    if (!dlg.open) dlg.showModal();
+  } catch (err) {
+    toast(`フォルダを開けませんでした: ${err.message}`);
+  }
+}
+
+$('#pin-browse').addEventListener('click', () => openBrowse(null));
+$('#browse-up').addEventListener('click', () => openBrowse(browseState.parent));
+$('#browse-close').addEventListener('click', () => $('#browse-dialog').close());
+$('#browse-pin').addEventListener('click', () => {
+  $('#browse-dialog').close();
+  if (browseState.path) {
+    $('#pin-path').value = browseState.path;
+    pinPath(browseState.path);
+  }
 });
 
 // ---- 検索 / ナビゲーション ------------------------------------------------

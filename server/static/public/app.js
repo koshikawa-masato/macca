@@ -711,12 +711,12 @@ function renderDevices() {
         ? `<button class="dev-btn" data-eject="${d.id}" title="一覧から外す (ファイルには触れません)">✕</button>`
         : `<button class="dev-btn" data-scan="${esc(d.path)}">スキャン</button>`;
     return `<div class="dev-row" title="${esc(d.path)}">
-      <span class="dev-name">💾 ${esc(d.label)}</span>
-      <span class="dev-count">${count}</span>${pin}${btn}</div>`;
+      <div class="dev-name">💾 ${esc(d.label)}</div>
+      <div class="dev-actions"><span class="dev-count">${count}</span>${pin}${btn}</div></div>`;
   }).join('') + offline.map((s) => `<div class="dev-row" title="${esc(s.dir)}">
-      <span class="dev-name">💾 ${esc(s.label)}</span>
-      <span class="dev-count">未接続</span>
-      <label class="dev-pin" title="固定を外すと一覧と記録から消えます"><input type="checkbox" data-unpin-remove="${s.id}" checked>固定</label></div>`).join('');
+      <div class="dev-name">💾 ${esc(s.label)}</div>
+      <div class="dev-actions"><span class="dev-count">未接続</span>
+      <label class="dev-pin" title="固定を外すと一覧と記録から消えます"><input type="checkbox" data-unpin-remove="${s.id}" checked>固定</label></div></div>`).join('');
 
   el.querySelectorAll('[data-scan]').forEach((b) => b.addEventListener('click', async () => {
     b.disabled = true;

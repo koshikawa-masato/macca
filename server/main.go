@@ -654,6 +654,9 @@ func scanLibrary(rootDir string, useCache bool) ([]track, []scanError) {
 			}
 			return nil
 		}
+		if d.IsDir() && p != rootDir && ignoredDirs[strings.ToLower(d.Name())] {
+			return filepath.SkipDir
+		}
 		if d.Type().IsRegular() && supportedExt[strings.ToLower(filepath.Ext(d.Name()))] {
 			paths = append(paths, p)
 		}
@@ -795,6 +798,15 @@ func saveCache(rootDir string, files map[string]cacheEntry) {
 // deleteLibraryCache は指定ルートのスキャンキャッシュを削除する (固定解除時のプライバシー対応)。
 func deleteLibraryCache(rootDir string) {
 	_ = os.Remove(cacheFileFor(rootDir))
+}
+
+// NAS や OS のシステムフォルダ (ゴミ箱・スナップショット等) はスキャンしない。
+// QNAP の @Recycle にはタグ書き換え時の旧ファイルが残り、曲が二重に見えてしまう
+var ignoredDirs = map[string]bool{
+	"@recycle": true, "@recently-snapshot": true, // QNAP
+	"#recycle": true, "#snapshot": true, // Synology
+	"$recycle.bin": true, "system volume information": true, // Windows
+	"lost+found": true, // Linux
 }
 
 // ---- 固定ライブラリの記録 ---------------------------------------------------

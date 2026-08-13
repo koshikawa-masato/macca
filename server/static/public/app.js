@@ -680,14 +680,17 @@ document.addEventListener('keydown', (e) => {
 // ---- デバイス (リムーバブルストレージ) --------------------------------------
 
 let devices = [];
+let deviceOpBusy = false; // スキャン・固定などの操作中は定期再描画で表示を巻き戻さない
 
 async function refreshDevices() {
+  if (deviceOpBusy) return;
   try {
     const res = await fetch('/api/devices');
     devices = (await res.json()).devices ?? [];
   } catch {
     devices = [];
   }
+  if (deviceOpBusy) return;
   renderDevices();
 }
 
@@ -719,6 +722,7 @@ function renderDevices() {
       <label class="dev-pin" title="固定を外すと一覧と記録から消えます"><input type="checkbox" data-unpin-remove="${s.id}" checked>固定</label></div></div>`).join('');
 
   el.querySelectorAll('[data-scan]').forEach((b) => b.addEventListener('click', async () => {
+    deviceOpBusy = true;
     b.disabled = true;
     b.textContent = 'スキャン中…';
     try {
@@ -734,9 +738,11 @@ function renderDevices() {
     } catch (err) {
       toast(`デバイスのスキャンに失敗しました: ${err.message}`);
     }
+    deviceOpBusy = false;
     refreshDevices();
   }));
   el.querySelectorAll('[data-eject]').forEach((b) => b.addEventListener('click', async () => {
+    deviceOpBusy = true;
     try {
       const res = await fetch(`/api/source/${b.dataset.eject}`, { method: 'DELETE' });
       const json = await res.json();
@@ -745,11 +751,16 @@ function renderDevices() {
     } catch (err) {
       toast(`取り外しに失敗しました: ${err.message}`);
     }
+    deviceOpBusy = false;
     refreshDevices();
   }));
   el.querySelectorAll('[data-pin]').forEach((c) => c.addEventListener('change', async () => {
+    deviceOpBusy = true;
     c.disabled = true;
     const scanned = devices.find((d) => d.id === c.dataset.pin)?.scanned;
+    // 未スキャンから固定する場合はスキャンを伴うので進行表示を出す
+    const countEl = c.closest('.dev-row')?.querySelector('.dev-count');
+    if (c.checked && !scanned && countEl) countEl.textContent = 'スキャン中…';
     try {
       // 未スキャンのデバイスを固定にした場合はスキャンと固定を一度に行う
       const res = c.checked && !scanned
@@ -770,9 +781,11 @@ function renderDevices() {
     } catch (err) {
       toast(`固定の変更に失敗しました: ${err.message}`);
     }
+    deviceOpBusy = false;
     refreshDevices();
   }));
   el.querySelectorAll('[data-unpin-remove]').forEach((c) => c.addEventListener('change', async () => {
+    deviceOpBusy = true;
     c.disabled = true;
     try {
       const res = await fetch(`/api/source/${c.dataset.unpinRemove}`, { method: 'DELETE' });
@@ -783,6 +796,7 @@ function renderDevices() {
     } catch (err) {
       toast(`固定の解除に失敗しました: ${err.message}`);
     }
+    deviceOpBusy = false;
     refreshDevices();
   }));
 }

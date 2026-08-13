@@ -1,4 +1,14 @@
 import { spawn } from 'node:child_process';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+
+// テストが実環境の設定 (~/.config/macca の固定ライブラリ記録) を読み込むと、
+// ユーザーの NAS 等を勝手にスキャンしてしまう。必ず空の一時ディレクトリに隔離する
+// (個別のテストが before() で上書きするのは自由)
+if (!process.env.MACCA_CONFIG_DIR) {
+  process.env.MACCA_CONFIG_DIR = mkdtempSync(path.join(tmpdir(), 'macca-test-cfg-'));
+}
 
 export async function startExternalServer(dir, { sources = [], devices = [] } = {}) {
   const bin = process.env.MACCA_SERVER_BIN;

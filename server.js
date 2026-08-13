@@ -10,13 +10,13 @@
 import http from 'node:http';
 import { createReadStream } from 'node:fs';
 import { readFileSync } from 'node:fs';
-import { open, stat, readdir, readFile } from 'node:fs/promises';
+import { open, stat, readdir, readFile, mkdir, writeFile } from 'node:fs/promises';
 import { spawn, execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { scanLibrary } from './lib/scan.js';
+import { scanLibrary, deleteLibraryCache } from './lib/scan.js';
 import { MIME_BY_EXT } from './lib/metadata.js';
 import { readAt } from './lib/util.js';
 import { listRemovableVolumes } from './lib/devices.js';
@@ -89,6 +89,37 @@ function sourceId(dir) {
   return createHash('sha1').update(path.resolve(dir)).digest('hex').slice(0, 12);
 }
 
+// ---- 固定ライブラリの記録 ---------------------------------------------------
+// UI で「固定」にしたデバイス/NAS のパスを設定ファイルに残し、次回起動時に
+// --source 指定と同じように自動で読み込む。固定ソースはスキャンキャッシュも使う。
+
+function configDir() {
+  return process.env.MACCA_CONFIG_DIR || path.join(os.homedir(), '.config', 'macca');
+}
+
+function sourcesFile() {
+  return path.join(configDir(), 'sources.json');
+}
+
+function loadPinnedDirs() {
+  try {
+    const json = JSON.parse(readFileSync(sourcesFile(), 'utf8'));
+    return Array.isArray(json?.pinned) ? json.pinned.filter((d) => typeof d === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+async function savePinnedDirs() {
+  const dirs = [...state.sources.values()].filter((s) => s.pinned).map((s) => s.dir);
+  try {
+    await mkdir(configDir(), { recursive: true });
+    await writeFile(sourcesFile(), JSON.stringify({ pinned: dirs }, null, 2) + '\n');
+  } catch (err) {
+    console.error(`設定の保存に失敗しました: ${err?.message ?? err}`);
+  }
+}
+
 /** 全ソースのトラックを一つの索引にまとめ直す */
 function rebuildIndex() {
   state.tracks = [...state.sources.values()].flatMap((s) => s.tracks);
@@ -101,9 +132,10 @@ async function scanSource(src, useCache = true) {
   console.log(`スキャン中: ${src.dir}`);
   const t0 = Date.now();
   // リムーバブルデバイスはディスクにキャッシュを残さない (プライバシー配慮:
-  // 抜いた後のデバイスの中身の記録が Mac 側に残らないようにする)
+  // 抜いた後のデバイスの中身の記録が Mac 側に残らないようにする)。
+  // ただし「固定」にしたソースはユーザーが記録を許可したものとして扱う
   const { tracks, errors } = await scanLibrary(src.dir, {
-    useCache: useCache && !src.removable,
+    useCache: useCache && (!src.removable || src.pinned),
     onProgress: (done, total) => console.log(`  ... ${done}/${total}`),
   });
   src.tracks = tracks.map((t) => ({ ...t, src: src.id }));
@@ -233,6 +265,7 @@ function serveLibrary(res) {
     dir: s.dir,
     label: s.label,
     removable: s.removable,
+    pinned: Boolean(s.pinned),
     tracks: s.tracks.length,
     errors: s.errors.length,
   }));
@@ -343,8 +376,12 @@ async function addDeviceSource(req, res, useCache) {
   if (!vol) return sendJson(res, 400, { error: '接続中のデバイスではありません' });
 
   const id = sourceId(vol.path);
-  if (!state.sources.has(id)) {
-    const src = { id, dir: vol.path, label: vol.label, removable: true, tracks: [], errors: [] };
+  const existing = state.sources.get(id);
+  if (!existing) {
+    const src = {
+      id, dir: vol.path, label: vol.label, removable: true,
+      pinned: Boolean(body?.pin), tracks: [], errors: [],
+    };
     state.sources.set(id, src);
     try {
       await scanSource(src, useCache);
@@ -353,17 +390,51 @@ async function addDeviceSource(req, res, useCache) {
       return sendJson(res, 500, { error: `スキャンに失敗しました: ${err?.message ?? err}` });
     }
     rebuildIndex();
+    if (src.pinned) await savePinnedDirs();
+  } else if (body?.pin && existing.removable && !existing.pinned) {
+    // スキャン済みデバイスを固定に昇格 (キャッシュ付きで読み直して次回起動を速くする)
+    existing.pinned = true;
+    try { await scanSource(existing, useCache); } catch { /* 一時的な読み取り失敗でも固定は記録する */ }
+    rebuildIndex();
+    await savePinnedDirs();
+  }
+  return serveLibrary(res);
+}
+
+/** ソースの固定 (次回起動時も自動読み込み) を切り替える */
+async function setSourcePin(req, res, id, useCache) {
+  const body = await readJsonBody(req);
+  const src = state.sources.get(id);
+  if (!src) return notFound(res, '不明なソース ID');
+  if (!src.removable) return sendJson(res, 400, { error: 'メインライブラリは常に固定です' });
+  const pinned = Boolean(body?.pinned);
+  if (Boolean(src.pinned) !== pinned) {
+    src.pinned = pinned;
+    if (pinned) {
+      // キャッシュ付きで読み直し、次回起動時に速く読めるようにする
+      try { await scanSource(src, useCache); } catch { /* デバイス不調でも固定自体は記録する */ }
+      rebuildIndex();
+    } else {
+      // 固定解除: リムーバブルのプライバシー方針に戻すのでキャッシュを消す
+      await deleteLibraryCache(src.dir);
+    }
+    await savePinnedDirs();
   }
   return serveLibrary(res);
 }
 
 /** デバイスソースを一覧から外す (ファイルには触れない) */
-function removeDeviceSource(res, id) {
+async function removeDeviceSource(res, id) {
   const src = state.sources.get(id);
   if (!src) return notFound(res, '不明なソース ID');
   if (!src.removable) return sendJson(res, 400, { error: 'メインライブラリは取り外せません' });
   state.sources.delete(id);
   rebuildIndex();
+  if (src.pinned) {
+    // 固定していた場合は記録とキャッシュも一緒に片付ける
+    await deleteLibraryCache(src.dir);
+    await savePinnedDirs();
+  }
   return serveLibrary(res);
 }
 
@@ -511,6 +582,16 @@ export async function createServer(rootDir, { useCache = true, deviceLister, ext
       removable: false, tracks: [], errors: [],
     });
   }
+  // UI で「固定」にしたソースを設定から復元 (--source と同じ扱いで毎回読み込む)
+  for (const dir of loadPinnedDirs()) {
+    const resolved = path.resolve(dir);
+    const id = sourceId(resolved);
+    if (state.sources.has(id)) continue;
+    state.sources.set(id, {
+      id, dir: resolved, label: path.basename(resolved) || resolved,
+      removable: true, pinned: true, tracks: [], errors: [],
+    });
+  }
   await rescan(useCache);
 
   // リムーバブルソース (SDカード等) を使用中はスリープさせない。
@@ -545,6 +626,8 @@ export async function createServer(rootDir, { useCache = true, deviceLister, ext
       if (p === '/api/source' && req.method === 'POST') {
         return addDeviceSource(req, res, useCache);
       }
+      const mp = /^\/api\/source\/([0-9a-f]{12})\/pin$/.exec(p);
+      if (mp && req.method === 'POST') return setSourcePin(req, res, mp[1], useCache);
       const ms = /^\/api\/source\/([0-9a-f]{12})$/.exec(p);
       if (ms && req.method === 'DELETE') return removeDeviceSource(res, ms[1]);
 

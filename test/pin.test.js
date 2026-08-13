@@ -1,0 +1,132 @@
+// 固定ライブラリ (デバイス/NAS のピン留め) のテスト
+// - 固定すると設定ファイル (sources.json) に記録される
+// - 再起動後は記録から自動でソースが復元される
+// - 固定解除・取り外しで記録が消える
+// (server.js のライブラリ状態はモジュールシングルトンのため、
+//  他のテストとはプロセスを分けて独立に検証する)
+
+import { test, before, after } from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { buildWav } from './fixtures.js';
+import { startExternalServer } from './go-harness.js';
+
+let libDir;
+let devDir;
+let configDir;
+let server;
+let base;
+
+async function startServer() {
+  const devices = [{ path: devDir, label: 'TEST-SD' }];
+  const external = await startExternalServer(libDir, { devices });
+  if (external) return external;
+  const { createServer } = await import('../server.js');
+  const srv = await createServer(libDir, {
+    useCache: false,
+    deviceLister: async () => devices,
+  });
+  await new Promise((resolve) => srv.listen(0, '127.0.0.1', resolve));
+  return {
+    base: `http://127.0.0.1:${srv.address().port}`,
+    close: () => new Promise((resolve) => srv.close(resolve)),
+  };
+}
+
+async function readConfig() {
+  try {
+    return JSON.parse(await readFile(path.join(configDir, 'sources.json'), 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+before(async () => {
+  libDir = await mkdtemp(path.join(tmpdir(), 'macca-pin-lib-'));
+  devDir = await mkdtemp(path.join(tmpdir(), 'macca-pin-dev-'));
+  configDir = await mkdtemp(path.join(tmpdir(), 'macca-pin-cfg-'));
+  process.env.MACCA_CONFIG_DIR = configDir;
+  await writeFile(path.join(libDir, 'main.wav'),
+    buildWav({ title: 'メイン曲', artist: 'A', album: 'X' }));
+  await writeFile(path.join(devDir, 'sd.wav'),
+    buildWav({ title: 'SDの曲', artist: 'B', album: 'Y' }));
+  server = await startServer();
+  base = server.base;
+});
+
+after(async () => {
+  await server?.close();
+  delete process.env.MACCA_CONFIG_DIR;
+  await rm(libDir, { recursive: true, force: true });
+  await rm(devDir, { recursive: true, force: true });
+  await rm(configDir, { recursive: true, force: true });
+});
+
+async function postJson(url, body) {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  return { status: res.status, json: await res.json() };
+}
+
+test('固定: スキャンと同時に固定でき、設定ファイルに記録される', async () => {
+  const { status, json } = await postJson(`${base}/api/source`, { path: devDir, pin: true });
+  assert.equal(status, 200);
+  const src = json.sources.find((s) => s.dir === devDir);
+  assert.ok(src, 'デバイスソースが追加されている');
+  assert.equal(src.removable, true);
+  assert.equal(src.pinned, true);
+  assert.ok(json.tracks.some((t) => t.title === 'SDの曲'));
+
+  const cfg = await readConfig();
+  assert.deepEqual(cfg, { pinned: [devDir] });
+});
+
+test('固定解除: pinned が消え、記録も空になる', async () => {
+  const lib = await (await fetch(`${base}/api/library`)).json();
+  const src = lib.sources.find((s) => s.dir === devDir);
+  const { status, json } = await postJson(`${base}/api/source/${src.id}/pin`, { pinned: false });
+  assert.equal(status, 200);
+  assert.equal(json.sources.find((s) => s.dir === devDir).pinned, false);
+  assert.deepEqual(await readConfig(), { pinned: [] });
+
+  // 再固定して次のテスト (再起動復元) に備える
+  const again = await postJson(`${base}/api/source/${src.id}/pin`, { pinned: true });
+  assert.equal(again.status, 200);
+  assert.equal(again.json.sources.find((s) => s.dir === devDir).pinned, true);
+  assert.deepEqual(await readConfig(), { pinned: [devDir] });
+});
+
+test('メインライブラリの固定切り替えは 400', async () => {
+  const lib = await (await fetch(`${base}/api/library`)).json();
+  const main = lib.sources.find((s) => !s.removable);
+  const { status } = await postJson(`${base}/api/source/${main.id}/pin`, { pinned: false });
+  assert.equal(status, 400);
+});
+
+test('再起動: 固定ソースが記録から自動で復元・スキャンされる', async () => {
+  await server.close();
+  server = await startServer();
+  base = server.base;
+
+  const lib = await (await fetch(`${base}/api/library`)).json();
+  const src = lib.sources.find((s) => s.dir === devDir);
+  assert.ok(src, '固定ソースが起動時に復元されている');
+  assert.equal(src.pinned, true);
+  assert.equal(src.removable, true);
+  assert.ok(lib.tracks.some((t) => t.title === 'SDの曲'), '復元されたソースの曲もスキャン済み');
+});
+
+test('取り外し: 固定ソースを外すと記録も消える', async () => {
+  const lib = await (await fetch(`${base}/api/library`)).json();
+  const src = lib.sources.find((s) => s.dir === devDir);
+  const res = await fetch(`${base}/api/source/${src.id}`, { method: 'DELETE' });
+  assert.equal(res.status, 200);
+  const json = await res.json();
+  assert.ok(!json.sources.some((s) => s.dir === devDir));
+  assert.deepEqual(await readConfig(), { pinned: [] });
+});

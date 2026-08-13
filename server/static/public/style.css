@@ -139,6 +139,17 @@ body {
 }
 .dev-btn:hover:not(:disabled) { color: var(--accent); border-color: var(--accent); }
 .dev-btn:disabled { opacity: 0.6; cursor: default; }
+.dev-pin {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+  color: var(--fg-dim);
+  cursor: pointer;
+}
+.dev-pin input { margin: 0; accent-color: var(--accent); cursor: pointer; }
+.dev-pin:hover { color: var(--accent); }
 
 /* ---- デバッグモード ---- */
 #debug-toggle {

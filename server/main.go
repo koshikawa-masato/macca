@@ -128,6 +128,7 @@ type source struct {
 	Dir       string
 	Label     string
 	Removable bool
+	Pinned    bool // UI で固定されたソース: 次回起動時も自動読み込み + キャッシュ使用
 	Tracks    []track
 	Errors    []scanError
 }
@@ -142,6 +143,7 @@ type librarySource struct {
 	Dir       string `json:"dir"`
 	Label     string `json:"label"`
 	Removable bool   `json:"removable"`
+	Pinned    bool   `json:"pinned"`
 	Tracks    int    `json:"tracks"`
 	Errors    int    `json:"errors"`
 }
@@ -341,6 +343,22 @@ func newState(opts options) (*appState, error) {
 		}
 		state.sources[id] = &source{ID: id, Dir: resolved, Label: label, Removable: false}
 	}
+	// UI で「固定」にしたソースを設定から復元 (--source と同じ扱いで毎回読み込む)
+	for _, dir := range loadPinnedDirs() {
+		resolved, err := filepath.Abs(dir)
+		if err != nil {
+			continue
+		}
+		id := sourceID(resolved)
+		if _, ok := state.sources[id]; ok {
+			continue
+		}
+		label := filepath.Base(resolved)
+		if label == "." || label == string(filepath.Separator) {
+			label = resolved
+		}
+		state.sources[id] = &source{ID: id, Dir: resolved, Label: label, Removable: true, Pinned: true}
+	}
 	if err := state.rescan(opts.cache); err != nil {
 		return nil, err
 	}
@@ -428,6 +446,13 @@ func (s *appState) serveAPI(w http.ResponseWriter, r *http.Request, useCache boo
 		s.serveDevices(w)
 	case p == "/api/source" && r.Method == http.MethodPost:
 		s.addDeviceSource(w, r, useCache)
+	case strings.HasPrefix(p, "/api/source/") && strings.HasSuffix(p, "/pin") && r.Method == http.MethodPost:
+		id := strings.TrimSuffix(strings.TrimPrefix(p, "/api/source/"), "/pin")
+		if len(id) != 12 {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+			return
+		}
+		s.setSourcePin(w, r, id, useCache)
 	case strings.HasPrefix(p, "/api/source/") && r.Method == http.MethodDelete:
 		id := strings.TrimPrefix(p, "/api/source/")
 		if len(id) != 12 {
@@ -514,7 +539,7 @@ func (s *appState) serveLibrary(w http.ResponseWriter) {
 		totalErrors += errs
 		sources = append(sources, librarySource{
 			ID: src.ID, Dir: src.Dir, Label: src.Label, Removable: src.Removable,
-			Tracks: len(src.Tracks), Errors: errs,
+			Pinned: src.Pinned, Tracks: len(src.Tracks), Errors: errs,
 		})
 	}
 	outTracks := make([]clientTrack, 0, len(s.tracks))
@@ -554,7 +579,9 @@ func (s *appState) rescan(useCache bool) error {
 	s.mu.RUnlock()
 
 	for _, src := range sources {
-		tracks, errs := scanLibrary(src.Dir, useCache && !src.Removable)
+		// リムーバブルはキャッシュを残さない (プライバシー配慮)。
+		// ただし「固定」ソースはユーザーが記録を許可したものとして扱う
+		tracks, errs := scanLibrary(src.Dir, useCache && (!src.Removable || src.Pinned))
 		s.mu.Lock()
 		src.Tracks = tracks
 		for i := range src.Tracks {
@@ -762,6 +789,69 @@ func saveCache(rootDir string, files map[string]cacheEntry) {
 	data, err := json.Marshal(cacheFile{Version: 1, Files: files})
 	if err == nil {
 		_ = os.WriteFile(cacheFileFor(rootDir), data, 0o644)
+	}
+}
+
+// deleteLibraryCache は指定ルートのスキャンキャッシュを削除する (固定解除時のプライバシー対応)。
+func deleteLibraryCache(rootDir string) {
+	_ = os.Remove(cacheFileFor(rootDir))
+}
+
+// ---- 固定ライブラリの記録 ---------------------------------------------------
+// UI で「固定」にしたデバイス/NAS のパスを設定ファイルに残し、次回起動時に
+// --source 指定と同じように自動で読み込む。Node 版と同じファイルを共有する。
+
+func configDir() string {
+	if dir := os.Getenv("MACCA_CONFIG_DIR"); dir != "" {
+		return dir
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(home, ".config", "macca")
+	}
+	return filepath.Join(os.TempDir(), "macca-config")
+}
+
+func sourcesFile() string {
+	return filepath.Join(configDir(), "sources.json")
+}
+
+func loadPinnedDirs() []string {
+	data, err := os.ReadFile(sourcesFile())
+	if err != nil {
+		return nil
+	}
+	var cfg struct {
+		Pinned []string `json:"pinned"`
+	}
+	if json.Unmarshal(data, &cfg) != nil {
+		return nil
+	}
+	return cfg.Pinned
+}
+
+func (s *appState) savePinnedDirs() {
+	s.mu.RLock()
+	ids := make([]string, 0, len(s.sources))
+	for id := range s.sources {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	dirs := []string{}
+	for _, id := range ids {
+		if src := s.sources[id]; src.Pinned {
+			dirs = append(dirs, src.Dir)
+		}
+	}
+	s.mu.RUnlock()
+	if err := os.MkdirAll(configDir(), 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "設定の保存に失敗しました: %v\n", err)
+		return
+	}
+	data, _ := json.MarshalIndent(struct {
+		Pinned []string `json:"pinned"`
+	}{dirs}, "", "  ")
+	if err := os.WriteFile(sourcesFile(), append(data, '\n'), 0o644); err != nil {
+		fmt.Fprintf(os.Stderr, "設定の保存に失敗しました: %v\n", err)
 	}
 }
 
@@ -2020,6 +2110,7 @@ func listDevices() []device {
 func (s *appState) addDeviceSource(w http.ResponseWriter, r *http.Request, useCache bool) {
 	var body struct {
 		Path string `json:"path"`
+		Pin  bool   `json:"pin"`
 	}
 	_ = json.NewDecoder(io.LimitReader(r.Body, 64*1024)).Decode(&body)
 	reqPath, err := filepath.Abs(body.Path)
@@ -2042,11 +2133,55 @@ func (s *appState) addDeviceSource(w http.ResponseWriter, r *http.Request, useCa
 	}
 	id := sourceID(found.Path)
 	s.mu.Lock()
+	pinChanged := false
 	if s.sources[id] == nil {
-		s.sources[id] = &source{ID: id, Dir: reqPath, Label: found.Label, Removable: true}
+		s.sources[id] = &source{ID: id, Dir: reqPath, Label: found.Label, Removable: true, Pinned: body.Pin}
+		pinChanged = body.Pin
+	} else if body.Pin && s.sources[id].Removable && !s.sources[id].Pinned {
+		// スキャン済みデバイスを固定に昇格 (キャッシュ付きで読み直して次回起動を速くする)
+		s.sources[id].Pinned = true
+		pinChanged = true
 	}
 	s.mu.Unlock()
 	_ = s.rescan(useCache)
+	if pinChanged {
+		s.savePinnedDirs()
+	}
+	s.serveLibrary(w)
+}
+
+// setSourcePin はソースの固定 (次回起動時も自動読み込み) を切り替える。
+func (s *appState) setSourcePin(w http.ResponseWriter, r *http.Request, id string, useCache bool) {
+	var body struct {
+		Pinned bool `json:"pinned"`
+	}
+	_ = json.NewDecoder(io.LimitReader(r.Body, 64*1024)).Decode(&body)
+	s.mu.Lock()
+	src := s.sources[id]
+	if src == nil {
+		s.mu.Unlock()
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "不明なソース ID"})
+		return
+	}
+	if !src.Removable {
+		s.mu.Unlock()
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "メインライブラリは常に固定です"})
+		return
+	}
+	changed := src.Pinned != body.Pinned
+	src.Pinned = body.Pinned
+	dir := src.Dir
+	s.mu.Unlock()
+	if changed {
+		if body.Pinned {
+			// キャッシュ付きで読み直し、次回起動時に速く読めるようにする
+			_ = s.rescan(useCache)
+		} else {
+			// 固定解除: リムーバブルのプライバシー方針に戻すのでキャッシュを消す
+			deleteLibraryCache(dir)
+		}
+		s.savePinnedDirs()
+	}
 	s.serveLibrary(w)
 }
 
@@ -2064,8 +2199,15 @@ func (s *appState) removeDeviceSource(w http.ResponseWriter, id string) {
 		return
 	}
 	delete(s.sources, id)
+	wasPinned := src.Pinned
+	dir := src.Dir
 	s.mu.Unlock()
 	s.rebuildIndex()
+	if wasPinned {
+		// 固定していた場合は記録とキャッシュも一緒に片付ける
+		deleteLibraryCache(dir)
+		s.savePinnedDirs()
+	}
 	s.serveLibrary(w)
 }
 

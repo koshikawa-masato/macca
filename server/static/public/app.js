@@ -920,16 +920,52 @@ async function openBrowse(p) {
   }
 }
 
-$('#pin-browse').addEventListener('click', () => openBrowse(null));
 $('#browse-up').addEventListener('click', () => openBrowse(browseState.parent));
 $('#browse-close').addEventListener('click', () => $('#browse-dialog').close());
 $('#browse-pin').addEventListener('click', () => {
   $('#browse-dialog').close();
-  if (browseState.path) {
-    $('#pin-path').value = browseState.path;
-    pinPath(browseState.path);
-  }
+  if (browseState.path) pinPath(browseState.path);
 });
+
+// ---- 固定ライブラリの設定 (⚙) ----------------------------------------------
+// どの場所を固定しているかの一覧・追加・解除
+
+function renderPinnedList() {
+  const list = $('#pinned-list');
+  const pinned = (state.sources ?? []).filter((s) => s.pinned);
+  list.innerHTML = pinned.length
+    ? pinned.map((s) => `<div class="pinned-row">
+        <div class="pinned-info">
+          <div>💾 ${esc(s.label)} <span class="dev-count">${s.tracks} 曲</span></div>
+          <div class="pinned-dir">${esc(s.dir)}</div>
+        </div>
+        <button class="dev-btn" data-unpin="${s.id}" title="固定をやめてライブラリから外す (ファイルには触れません)">解除</button>
+      </div>`).join('')
+    : '<div class="dev-empty">固定した場所はありません</div>';
+  list.querySelectorAll('[data-unpin]').forEach((b) => b.addEventListener('click', async () => {
+    b.disabled = true;
+    deviceOpBusy = true;
+    try {
+      const res = await fetch(`/api/source/${b.dataset.unpin}`, { method: 'DELETE' });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error ?? res.status);
+      applyLibrary(json);
+      toast('固定を解除しました');
+    } catch (err) {
+      toast(`解除に失敗しました: ${err.message}`);
+    }
+    deviceOpBusy = false;
+    renderPinnedList();
+    refreshDevices();
+  }));
+}
+
+$('#settings-btn').addEventListener('click', () => {
+  renderPinnedList();
+  $('#settings-dialog').showModal();
+});
+$('#settings-close').addEventListener('click', () => $('#settings-dialog').close());
+$('#pinned-add').addEventListener('click', () => openBrowse(null));
 
 // ---- 検索 / ナビゲーション ------------------------------------------------
 
@@ -1011,6 +1047,7 @@ function applyLibrary(data) {
   renderStats();
   renderFormatChips();
   renderDevices();
+  if ($('#settings-dialog').open) renderPinnedList();
   render();
   if (data.errors > 0) toast(`${data.errors} 件のファイルが読み取れませんでした`);
 }

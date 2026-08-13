@@ -31,9 +31,20 @@
     <div id="debug-panel" hidden></div>
     <div id="debug-tools" hidden>
       <input id="pin-path" type="text" placeholder="フォルダを固定: /Volumes/…" spellcheck="false">
-      <button id="pin-browse" class="dev-btn" title="フォルダを開いて選ぶ">📁</button>
       <button id="pin-add" class="dev-btn">固定</button>
     </div>
+    <div id="sidebar-bottom">
+      <button id="settings-btn" title="固定ライブラリの設定">⚙</button>
+    </div>
+    <dialog id="settings-dialog">
+      <div class="dlg-title">固定ライブラリ</div>
+      <div class="dlg-desc">固定した場所は次回起動時も自動で読み込まれます (スキャン結果を保存)</div>
+      <div id="pinned-list"></div>
+      <div id="settings-actions">
+        <button id="pinned-add" class="dev-btn">＋ フォルダを追加</button>
+        <button id="settings-close" class="dev-btn">閉じる</button>
+      </div>
+    </dialog>
     <dialog id="browse-dialog">
       <div id="browse-path">デバイスを選択</div>
       <div id="browse-list"></div>

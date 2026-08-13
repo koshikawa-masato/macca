@@ -73,7 +73,21 @@ body {
   border-right: 1px solid var(--border);
   padding: 14px 10px;
   overflow-y: auto;
+  display: flex;
+  flex-direction: column;
 }
+#sidebar > * { flex-shrink: 0; }
+#sidebar-bottom { margin-top: auto; padding-top: 12px; }
+#settings-btn {
+  border: none;
+  background: transparent;
+  color: var(--fg-dim);
+  font-size: 16px;
+  padding: 4px 6px;
+  cursor: pointer;
+  border-radius: 6px;
+}
+#settings-btn:hover { color: var(--accent); background: var(--bg3); }
 .nav-section {
   font-size: 11px;
   color: var(--fg-dim);
@@ -190,8 +204,9 @@ body {
 }
 #debug-tools input:focus { outline: none; border-color: var(--accent); }
 
-/* フォルダ選択ダイアログ (デバッグモード限定) */
-#browse-dialog {
+/* ダイアログ (フォルダ選択・固定ライブラリ設定) */
+#browse-dialog,
+#settings-dialog {
   min-width: 340px;
   max-width: 480px;
   border: 1px solid var(--border);
@@ -200,7 +215,35 @@ body {
   color: var(--fg);
   padding: 14px;
 }
-#browse-dialog::backdrop { background: rgba(0, 0, 0, 0.5); }
+#browse-dialog::backdrop,
+#settings-dialog::backdrop { background: rgba(0, 0, 0, 0.5); }
+.dlg-title { font-size: 14px; font-weight: 600; margin-bottom: 4px; }
+.dlg-desc { font-size: 11.5px; color: var(--fg-dim); margin-bottom: 10px; }
+#pinned-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 45vh;
+  overflow-y: auto;
+  margin-bottom: 12px;
+}
+.pinned-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.pinned-info { flex: 1; min-width: 0; font-size: 12.5px; }
+.pinned-dir {
+  font-size: 11px;
+  color: var(--fg-dim);
+  word-break: break-all;
+  margin-top: 2px;
+}
+#settings-actions { display: flex; gap: 6px; }
+#settings-actions #settings-close { margin-left: auto; }
 #browse-path {
   font-size: 11.5px;
   color: var(--fg-dim);

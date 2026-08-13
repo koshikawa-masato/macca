@@ -67,7 +67,7 @@ body {
 #layout { display: flex; flex: 1; min-height: 0; }
 
 #sidebar {
-  width: 210px;
+  width: 252px;
   flex-shrink: 0;
   background: var(--bg2);
   border-right: 1px solid var(--border);
@@ -146,12 +146,14 @@ body {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 8px;
-  margin-top: 3px;
+  flex-wrap: wrap; /* 幅が足りないときはボタンを折り返して見切れを防ぐ */
+  gap: 4px 6px;
+  margin-top: 4px;
 }
-.dev-count { font-size: 11px; color: var(--fg-dim); flex-shrink: 0; }
+.dev-count { font-size: 11px; color: var(--fg-dim); flex-shrink: 0; white-space: nowrap; }
 .dev-btn {
   flex-shrink: 0;
+  white-space: nowrap;
   padding: 2px 8px;
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -166,6 +168,7 @@ body {
 .dev-btn.accent:hover:not(:disabled) { border-color: var(--accent); }
 .pin-badge {
   flex-shrink: 0;
+  white-space: nowrap;
   font-size: 10.5px;
   color: var(--accent);
   border: 1px solid var(--accent-dim);

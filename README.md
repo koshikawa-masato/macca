@@ -25,52 +25,30 @@ mp3 / AIFF / ALAC (m4a) / AAC / FLAC / WAV の入ったフォルダをスキャ�
 4. **音質に妥協しない** — ビット正確なデコード、不要なリサンプリングをしない
 5. **先人の真似をしない** — 既存プレーヤの再現ではなく、ファイルとフォルダを正とする最小構成を貫く
 
-## インストール
+## インストール — 軽快に
 
 [**Releases**](https://github.com/koshikawa-masato/macca/releases) からダウンロードするだけです。
-Node.js などの事前インストールは不要です。
+Node.js などの事前準備は要りません。
 
-| OS | ファイル | 手順 |
-|----|---------|------|
-| **macOS** | `macca.dmg` | 開いて macca を Applications へドラッグ |
-| **Windows** | `macca.msi` | ダブルクリックでインストール → スタートメニューの「macca」 |
-| **Linux** | `macca-linux-*` | `chmod +x` して `./macca-linux-amd64 --open` |
+| OS | これだけ |
+|----|---------|
+| **macOS** | `macca.dmg` を開いて macca を Applications へドラッグ |
+| **Windows** | `macca.msi` をダブルクリック |
+| **Linux** | `macca-linux-*` を実行 |
 
-インストーラは未署名のため初回のみ OS の警告が出ます。
-macOS は右クリック →「開く」、Windows は「詳細情報」→「実行」で通過できます。
-
-Go が入っているなら 1 コマンドでも入ります（フロントエンド同梱・全 OS）:
-
-```sh
-go install github.com/koshikawa-masato/macca/cmd/macca@latest
-```
+初回の未署名警告の通し方、Homebrew / `go install`、コマンドラインオプション、
+ソースからの起動・ビルド・開発は、すべて [**INSTALL.md**](INSTALL.md) にまとめてあります。
 
 ## 使い方
 
-起動するとブラウザが開き、**iTunes / ミュージックの標準ライブラリを自動検出**します
-（macOS ミュージック.app `~/Music/Music/Media.localized/Music` → Windows 版 Apple Music →
-iTunes `~/Music/iTunes/iTunes Media` → `~/Music` の順）。あとは曲をクリックするだけです。
+起動するとブラウザが開き、**iTunes / ミュージックの標準ライブラリを自動検出**します。
+あとは曲をクリックするだけです。
 
 アプリのように振る舞います:
 
 - **ブラウザ（macca のページ）を閉じると数秒後に自動終了**します
-  （複数タブや他の端末で開いている間は終了しません）
 - macOS では起動中の Dock アイコンをもう一度クリックするとページを開き直します
-- **多重起動も可能** — ポートが使用中なら自動的に次のポート (8324, 8325, …) で立ち上がります
-
-コマンドラインからの起動とオプション:
-
-```
-使い方: macca [音楽ディレクトリ] [--port 8323] [--host 127.0.0.1] [--source <dir>]... [--no-cache] [--open] [--exit-on-close]
-```
-
-- 音楽ディレクトリを指定すれば任意のフォルダを配信できます
-- `--source <dir>`（複数可）で NAS のマウント先などを追加できます
-- `--host 0.0.0.0` にすると同じ LAN 内のスマホなどからも聴けます
-  （認証はないので、信頼できるネットワーク内でのみ使ってください。
-  この用途では `--exit-on-close` を付けずに起動します）
-- 初回スキャン結果は `~/.cache/macca/` にキャッシュされ、2 回目以降の起動は高速です
-  （更新日時・サイズが変わったファイルだけ再読み込み）
+- 任意のフォルダ・NAS・別ポートなどの起動オプションは [INSTALL.md](INSTALL.md) へ
 
 ## 再生
 
@@ -82,8 +60,6 @@ MP3 / AAC / ALAC / AIFF / FLAC / WAV すべてをモダンブラウザで再生�
 
 - **ALAC** — Apple がオープンソース化した公式デコーダ（Apache 2.0）を WASM 化して同梱（16KB）
 - **AIFF** — 実質ビッグエンディアン PCM なので純 JS でデコード
-
-サーバに ffmpeg があれば、未知の形式に当たったときのフォールバックとしてだけ使われます。
 
 ### 再生エンジン
 
@@ -101,24 +77,22 @@ MP3 / AAC / ALAC / AIFF / FLAC / WAV すべてをモダンブラウザで再生�
 ### リソース使用量の目安（実測）
 
 約 620 曲・27 時間・11GB（FLAC 中心・埋め込みジャケット付き）のライブラリを
-SD カードから配信し、FLAC をストリーミング再生中の実測値（v0.1.2 / Apple Silicon Mac）:
+SD カードから配信し、FLAC をストリーミング再生中の実測値（Apple Silicon Mac）:
 
 | 項目 | 実測値 |
 |------|--------|
-| クリック → 再生開始 | **21〜128ms**（ローカル、FLAC/ALAC/WAV） |
+| クリック → 再生開始 | **21〜128ms**(ローカル、FLAC/ALAC/WAV) |
 | サーバ常駐メモリ (RSS) | **約 20MB**（CPU 0.1%） |
 | ブラウザタブの JS ヒープ | **約 75MB**（再生中） |
-| エンジンが保持するデコード済み PCM | 再生位置の周辺 30〜45 秒分のみ（セグメント 3〜4 個） |
+| エンジンが保持するデコード済み PCM | 再生位置の周辺 30〜45 秒分のみ |
 
-再生エンジンは曲全体を展開せず、再生位置の少し先までを窓単位でデコードして
-再生済み分を即解放するため、**メモリ使用量は曲の長さやライブラリの規模に
+再生エンジンは曲全体を展開しないため、**メモリ使用量は曲の長さやライブラリの規模に
 ほぼ依存しません**。実機での値は、サイドバー下部の「デバッグ」チェックを
-ON にするといつでも確認できます（サーバ RSS/CPU・ブラウザヒープ・保持セグメント数）。
+ON にするといつでも確認できます。
 
 ### 再生モード
 
 曲をクリックすると**その曲のアルバム全体**（トラック番号順）が再生キューになります。
-プレーヤのセレクタで切り替え:
 
 - **アルバム再生**（既定） — クリックした曲からアルバム末尾まで再生して停止
 - **1回再生** / **1曲リピート**
@@ -136,104 +110,14 @@ ON にするといつでも確認できます（サーバ RSS/CPU・ブラウザ
   なければフォルダ内の `cover.jpg` / `folder.jpg` 等にフォールバック
 - キーボード操作（Space で再生/停止）・OS のメディアキー対応
 - 文字化け対策: エンコーディング宣言が壊れたタグ（Latin-1 と偽った Shift_JIS / UTF-8）を推定してデコード
-- **USB / SD カードのスキャン** — サイドバーの「デバイス」に接続中のリムーバブルストレージが
-  表示され、ワンクリックでライブラリに統合。取り外してもファイルには一切触れず、
-  **スキャン結果のキャッシュも Mac 側に残しません**（プライバシー配慮）
+- **USB / SD カードのスキャン** — 接続中のリムーバブルストレージをワンクリックで
+  ライブラリに統合。取り外してもファイルには一切触れず、
+  **スキャン結果のキャッシュも残しません**（プライバシー配慮）
+- **固定ライブラリ（⚙ フォルダ設定）** — よく聴くデバイスや NAS のフォルダを「固定」すると、
+  次回起動時も自動で読み込まれ、キャッシュにより 2 回目以降の起動が高速になります
 
-### MTP 接続のデバイス（Android スマホ・一部の DAP）
-
-MTP はファイルシステムではないため、OS がフォルダとして見せてくれる場合のみ扱えます。
-Linux は gvfs マウントを自動検出します。macOS / Windows での現実的な選択肢:
-
-1. デバイス側に **USB ストレージモード**があれば切り替える
-2. SD カードを抜いてカードリーダーで挿す → 「デバイス」からスキャン
-3. [OpenMTP](https://openmtp.ganeshrvel.com/) 等でいったん PC 側へコピーしてスキャン
-
-### 対応メタデータ
-
-すべて自前実装のパーサで、ファイルの必要な部分だけを読みます
-（240GB のライブラリでも全ファイル読み込みはしません）。
-
-| 形式 | コンテナ | 読むもの |
-|------|----------|----------|
-| .mp3 | ID3v2.2 / 2.3 / 2.4 | タイトル・アーティスト・アルバム・トラック番号・年・ジャンル・アートワーク、Xing/CBR による再生時間推定 |
-| .m4a | MP4 (iTunes 形式 ilst) | 同上 + コーデック判別（ALAC / AAC） |
-| .aiff / .aif | IFF (COMM / ID3 チャンク) | 同上 + 正確な再生時間 |
-| .flac | Vorbis Comment / PICTURE | 同上 |
-| .wav | RIFF (LIST INFO / id3) | 同上 |
-
-タグがないファイルは「`アーティスト - タイトル.mp3`」形式のファイル名から推定します。
-
-## ソースから動かす
-
-サーバは **Go 版**（リリースに同梱しているもの）と **Node.js 版**の 2 実装があり、
-HTTP API・キャッシュ形式まで完全互換です（パリティテストで担保）。どちらでも動きます:
-
-```sh
-git clone https://github.com/koshikawa-masato/macca.git
-cd macca
-go run ./cmd/macca     # Go 1.23+ の場合
-node server.js         # Node.js 18+ の場合
-```
-
-ダブルクリック用ランチャーも同梱しています。リポジトリ直下に
-`go build -o macca ./cmd/macca` で Go バイナリを置いておくとそれを優先起動し、
-なければ Node.js 版を起動します（どちらで動いているかはヘッダのバッジで分かります）:
-
-- **macOS** — `macca.app`（Dock 対応・ターミナル不要）または `macca.command`
-- **Windows** — `macca.bat`
-- **Linux** — `macca.sh`
-
-うまく動かないときは、ポートを `--port 8080` のように変えるか、
-音楽フォルダを引数で直接指定してください。
-
-## 開発
-
-```sh
-npm test                                  # 全テスト (Node 実装 + フロントのデコーダ)
-go build -o macca ./cmd/macca && \
-  MACCA_SERVER_BIN=./macca npm test       # Go 実装に対する受け入れ + パリティテスト
-```
-
-### ビルド
-
-Go 1.23+ が必要です。フロントエンドは `server/static/public/` にあり、
-Go バイナリへ自動で埋め込まれます（コピー等の前処理は不要）。
-
-```sh
-go build -o macca ./cmd/macca   # サーバ単体。リポジトリ直下に置くとランチャー/macca.app がこれを優先起動
-./build/release.sh              # 全 OS 向けバイナリ一括ビルド → build/release/
-./build/dmg/build.sh            # macOS 配布用 DMG (要 macOS)
-./build/msi/build.sh            # Windows 配布用 MSI (要 msitools: brew install msitools)
-```
-
-普段の開発では再実行不要な生成物のビルド:
-
-```sh
-./build/macca-app/build.sh              # macca.app ランチャー (launcher.swift 変更時)
-./build/alac-wasm/build.sh              # alac.wasm (要 emscripten)
-node build/gen-sjis/gen.mjs > server/sjis.go   # Shift_JIS テーブル
-```
-
-合成フィクスチャ（壊れタグ・Shift_JIS 偽装・VBR・ID3v2.2・unsync などの意地悪ケース含む）と
-本物の ALAC ファイルで、パーサ・ブラウザ側デコーダ（波形復元精度まで）・HTTP API を検証します。
-
-```
-cmd/macca/           Go サーバのエントリポイント (go install 対応)
-server/              Go サーバ本体 (リリース版の実体)
-server/static/public フロントエンド (素の HTML/CSS/JS。Go バイナリに embed される)
-  └ player/          Web Audio 再生エンジン + ALAC(WASM)/AIFF デコーダ
-server.js + lib/     Node.js サーバ (同一挙動のリファレンス実装)
-macca.app/           macOS 用アプリバンドル
-build/
-  alac-wasm/         alac.wasm のビルド
-  gen-sjis/          Shift_JIS テーブル生成 (Go 用)
-  macca-app/         macca.app ランチャーのビルド
-  dmg/  msi/         インストーラ生成 (macOS / Windows)
-  release.sh         全 OS 向けバイナリの一括ビルド
-test/                フィクスチャ生成 + テスト (両実装共通の受け入れテスト)
-docs/                仕様書・スクリーンショット
-```
+メタデータはすべて自前実装のパーサで、ファイルの必要な部分だけを読みます
+（対応タグの詳細は [INSTALL.md](INSTALL.md#対応メタデータ) を参照）。
 
 ## 背景
 

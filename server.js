@@ -144,11 +144,16 @@ async function scanSource(src, useCache = true) {
     (errors.length ? `, 読み取り失敗 ${errors.length} 件` : ''));
 }
 
-async function rescan(useCache = true, srcs = null) {
-  if (state.scanning) return;
+// スキャンは直列キューで実行する。API はキューに積んですぐ応答し、
+// フロントは scanning フラグを見てライブラリを追いかける (UI を固めない)
+let scanChain = Promise.resolve();
+let scanJobs = 0;
+
+function queueScan(srcs, useCache = true) {
+  scanJobs++;
   state.scanning = true;
-  try {
-    for (const src of srcs ?? [...state.sources.values()]) {
+  scanChain = scanChain.then(async () => {
+    for (const src of srcs) {
       try {
         await scanSource(src, useCache);
       } catch (err) {
@@ -158,9 +163,14 @@ async function rescan(useCache = true, srcs = null) {
       }
     }
     rebuildIndex();
-  } finally {
-    state.scanning = false;
-  }
+  }).finally(() => {
+    if (--scanJobs === 0) state.scanning = false;
+  });
+  return scanChain;
+}
+
+async function rescan(useCache = true, srcs = null) {
+  return queueScan(srcs ?? [...state.sources.values()], useCache);
 }
 
 function detectFfmpeg() {
@@ -428,19 +438,13 @@ async function addDeviceSource(req, res, useCache) {
       removable: true, pinned: Boolean(body?.pin), tracks: [], errors: [],
     };
     state.sources.set(id, src);
-    try {
-      await scanSource(src, useCache);
-    } catch (err) {
-      state.sources.delete(id);
-      return sendJson(res, 500, { error: `スキャンに失敗しました: ${err?.message ?? err}` });
-    }
-    rebuildIndex();
+    // スキャンで応答を待たせない: 裏で実行し、UI は scanning を見て合流する
+    queueScan([src], useCache);
     if (src.pinned) await savePinnedDirs();
   } else if (body?.pin && existing.removable && !existing.pinned) {
     // スキャン済みデバイスを固定に昇格 (キャッシュ付きで読み直して次回起動を速くする)
     existing.pinned = true;
-    try { await scanSource(existing, useCache); } catch { /* 一時的な読み取り失敗でも固定は記録する */ }
-    rebuildIndex();
+    queueScan([existing], useCache);
     await savePinnedDirs();
   }
   return serveLibrary(res);
@@ -456,9 +460,8 @@ async function setSourcePin(req, res, id, useCache) {
   if (Boolean(src.pinned) !== pinned) {
     src.pinned = pinned;
     if (pinned) {
-      // キャッシュ付きで読み直し、次回起動時に速く読めるようにする
-      try { await scanSource(src, useCache); } catch { /* デバイス不調でも固定自体は記録する */ }
-      rebuildIndex();
+      // キャッシュ付きで読み直し、次回起動時に速く読めるようにする (裏で実行)
+      queueScan([src], useCache);
     } else {
       // 固定解除: リムーバブルのプライバシー方針に戻すのでキャッシュを消す
       await deleteLibraryCache(src.dir);
@@ -469,16 +472,11 @@ async function setSourcePin(req, res, id, useCache) {
 }
 
 /** ソース単体を再スキャンする (固定ソースの内容更新用。全体の /api/rescan より軽い) */
-async function rescanSource(res, id, useCache) {
+function rescanSource(res, id, useCache) {
   const src = state.sources.get(id);
   if (!src) return notFound(res, '不明なソース ID');
-  try {
-    await scanSource(src, useCache);
-  } catch (err) {
-    src.tracks = [];
-    src.errors = [{ path: src.dir, error: String(err?.message ?? err) }];
-  }
-  rebuildIndex();
+  // 裏で実行してすぐ応答する (UI は scanning を見て合流)
+  queueScan([src], useCache);
   return serveLibrary(res);
 }
 

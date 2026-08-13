@@ -706,10 +706,11 @@ function renderDevices() {
   el.innerHTML = devices.map((d) => {
     const src = sources.find((s) => s.id === d.id);
     let count = src ? `${src.tracks} 曲` : '';
+    // 裏スキャンの途中は 0 曲ではなく進行中と分かる表示にする
+    if (src && src.tracks === 0 && state.scanning) count = 'スキャン中…';
     const pinned = Boolean(src?.pinned);
     let actions;
     if (pinned) {
-      if (src && src.tracks === 0 && state.scanning) count = 'スキャン中…';
       actions = `<span class="pin-badge" title="固定ライブラリ (解除は ⚙ フォルダ設定から)">固定中</span>
         <button class="dev-btn" data-rescan="${d.id}" title="このデバイスだけ読み直す">再スキャン</button>`;
     } else if (d.scanned) {
@@ -752,7 +753,7 @@ function renderDevices() {
       const json = await res.json();
       if (!res.ok) throw new Error(json.error ?? res.status);
       applyLibrary(json);
-      toast('デバイスをスキャンしました');
+      toast('スキャンを開始しました (完了すると曲数に反映されます)');
     } catch (err) {
       toast(`デバイスのスキャンに失敗しました: ${err.message}`);
     }
@@ -781,7 +782,7 @@ function renderDevices() {
       const json = await res.json();
       if (!res.ok) throw new Error(json.error ?? res.status);
       applyLibrary(json);
-      toast('再スキャン完了');
+      toast('再スキャンを開始しました');
     } catch (err) {
       toast(`再スキャンに失敗しました: ${err.message}`);
     }
@@ -863,7 +864,7 @@ async function pinPath(p) {
     const json = await res.json();
     if (!res.ok) throw new Error(json.error ?? res.status);
     applyLibrary(json);
-    toast('フォルダを固定ライブラリにしました');
+    toast('固定しました。スキャンしています… (完了すると曲数に反映されます)');
   } catch (err) {
     toast(`固定に失敗しました: ${err.message}`);
   }
@@ -929,7 +930,7 @@ function renderPinnedList() {
       const json = await res.json();
       if (!res.ok) throw new Error(json.error ?? res.status);
       applyLibrary(json);
-      toast('再スキャン完了');
+      toast('再スキャンを開始しました');
     } catch (err) {
       toast(`再スキャンに失敗しました: ${err.message}`);
     }

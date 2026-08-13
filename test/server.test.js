@@ -132,15 +132,20 @@ test('デバイス: 検出 → スキャン → 統合 → 再生 → 取り外�
   });
   assert.equal(bad.status, 400);
 
-  // スキャンしてライブラリに統合
+  // スキャンしてライブラリに統合 (スキャンは裏で走るので完了を待つ)
   const res = await fetch(`${base}/api/source`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ path: deviceDir }),
   });
   assert.equal(res.status, 200);
-  const lib = await res.json();
+  let lib = await res.json();
   assert.equal(lib.sources.length, 2);
+  for (let i = 0; i < 100; i++) {
+    if (!lib.scanning && lib.tracks.some((x) => x.title === 'ポータブル曲')) break;
+    await new Promise((r) => setTimeout(r, 100));
+    lib = await (await fetch(`${base}/api/library`)).json();
+  }
   const t = lib.tracks.find((x) => x.title === 'ポータブル曲');
   assert.ok(t, 'デバイスの曲が統合されている');
   const devSrc = lib.sources.find((s) => s.removable);

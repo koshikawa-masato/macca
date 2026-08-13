@@ -73,6 +73,17 @@ async function postJson(url, body) {
   return { status: res.status, json: await res.json() };
 }
 
+/** スキャンは裏で走るので、条件が満たされるまでライブラリを追いかける */
+async function waitForScan(pred) {
+  let lib;
+  for (let i = 0; i < 100; i++) {
+    lib = await (await fetch(`${base}/api/library`)).json();
+    if (!lib.scanning && pred(lib)) return lib;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  return lib;
+}
+
 test('固定: スキャンと同時に固定でき、設定ファイルに記録される', async () => {
   const { status, json } = await postJson(`${base}/api/source`, { path: devDir, pin: true });
   assert.equal(status, 200);
@@ -80,10 +91,10 @@ test('固定: スキャンと同時に固定でき、設定ファイルに記録
   assert.ok(src, 'デバイスソースが追加されている');
   assert.equal(src.removable, true);
   assert.equal(src.pinned, true);
-  assert.ok(json.tracks.some((t) => t.title === 'SDの曲'));
-
-  const cfg = await readConfig();
-  assert.deepEqual(cfg, { pinned: [devDir] });
+  // 記録は即座、スキャンは裏で走る
+  assert.deepEqual(await readConfig(), { pinned: [devDir] });
+  const lib = await waitForScan((l) => l.tracks.some((t) => t.title === 'SDの曲'));
+  assert.ok(lib.tracks.some((t) => t.title === 'SDの曲'));
 });
 
 test('固定解除: pinned が消え、記録も空になる', async () => {
@@ -150,8 +161,9 @@ test('サブフォルダ固定: デバイス配下のフォルダだけをソー
   assert.ok(src, 'サブフォルダがソースとして追加されている');
   assert.equal(src.label, 'music');
   assert.equal(src.pinned, true);
-  assert.ok(json.tracks.some((t) => t.title === 'サブフォルダの曲'));
   assert.deepEqual(await readConfig(), { pinned: [subDir] });
+  const lib = await waitForScan((l) => l.tracks.some((t) => t.title === 'サブフォルダの曲'));
+  assert.ok(lib.tracks.some((t) => t.title === 'サブフォルダの曲'));
 
   // 後始末: 取り外して記録も消えることを確認
   const del = await fetch(`${base}/api/source/${src.id}`, { method: 'DELETE' });
@@ -188,17 +200,18 @@ test('サブフォルダ固定: デバイス外のパスと実在しないフォ
 });
 
 test('ソース単体の再スキャン: 追加ファイルが反映される', async () => {
-  // 固定ソースとして追加し直す
+  // 固定ソースとして追加し直し、初回スキャンの完了を待つ
   const { status, json } = await postJson(`${base}/api/source`, { path: devDir, pin: true });
   assert.equal(status, 200);
   const src = json.sources.find((s) => s.dir === devDir);
-  const before = src.tracks;
+  const scanned = await waitForScan((l) => l.sources.find((s) => s.dir === devDir)?.tracks > 0);
+  const before = scanned.sources.find((s) => s.dir === devDir).tracks;
 
   await writeFile(path.join(devDir, 'new.wav'),
     buildWav({ title: 'あとから追加した曲', artist: 'D', album: 'W' }));
   const res = await fetch(`${base}/api/source/${src.id}/rescan`, { method: 'POST' });
   assert.equal(res.status, 200);
-  const lib = await res.json();
+  const lib = await waitForScan((l) => l.sources.find((s) => s.dir === devDir)?.tracks === before + 1);
   assert.equal(lib.sources.find((s) => s.dir === devDir).tracks, before + 1);
   assert.ok(lib.tracks.some((t) => t.title === 'あとから追加した曲'));
   assert.equal(lib.sources.find((s) => s.dir === devDir).pinned, true, '再スキャンしても固定は維持');

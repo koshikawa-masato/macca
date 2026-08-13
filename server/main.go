@@ -169,6 +169,8 @@ type appState struct {
 	tracks      []track
 	byID        map[string]track
 	scanning    bool
+	scanJobs    int        // 実行待ち + 実行中のスキャンジョブ数 (mu で保護)
+	scanMu      sync.Mutex // スキャン実行を直列化する
 	scannedAt   string
 	ffmpeg      bool
 	folderArt   map[string]string
@@ -602,19 +604,23 @@ func (s *appState) rescan(useCache bool) error {
 	return s.rescanSources(useCache, sources)
 }
 
+// rescanSources はソース群を直列にスキャンする (scanMu で他のスキャンと排他)。
+// API から呼ぶ場合は goroutine に載せてすぐ応答し、UI は scanning フラグで合流する
 func (s *appState) rescanSources(useCache bool, sources []*source) error {
 	s.mu.Lock()
-	if s.scanning {
-		s.mu.Unlock()
-		return nil
-	}
+	s.scanJobs++
 	s.scanning = true
 	s.mu.Unlock()
 	defer func() {
 		s.mu.Lock()
-		s.scanning = false
+		s.scanJobs--
+		if s.scanJobs == 0 {
+			s.scanning = false
+		}
 		s.mu.Unlock()
 	}()
+	s.scanMu.Lock()
+	defer s.scanMu.Unlock()
 
 	for _, src := range sources {
 		// リムーバブルはキャッシュを残さない (プライバシー配慮)。
@@ -2259,16 +2265,23 @@ func (s *appState) addDeviceSource(w http.ResponseWriter, r *http.Request, useCa
 	id := sourceID(reqPath)
 	s.mu.Lock()
 	pinChanged := false
+	var scanTarget *source
 	if s.sources[id] == nil {
-		s.sources[id] = &source{ID: id, Dir: reqPath, Label: label, Removable: true, Pinned: body.Pin}
+		src := &source{ID: id, Dir: reqPath, Label: label, Removable: true, Pinned: body.Pin}
+		s.sources[id] = src
+		scanTarget = src
 		pinChanged = body.Pin
 	} else if body.Pin && s.sources[id].Removable && !s.sources[id].Pinned {
 		// スキャン済みデバイスを固定に昇格 (キャッシュ付きで読み直して次回起動を速くする)
 		s.sources[id].Pinned = true
+		scanTarget = s.sources[id]
 		pinChanged = true
 	}
 	s.mu.Unlock()
-	_ = s.rescan(useCache)
+	if scanTarget != nil {
+		// スキャンで応答を待たせない: 裏で実行し、UI は scanning を見て合流する
+		go func() { _ = s.rescanSources(useCache, []*source{scanTarget}) }()
+	}
 	if pinChanged {
 		s.savePinnedDirs()
 	}
@@ -2299,8 +2312,8 @@ func (s *appState) setSourcePin(w http.ResponseWriter, r *http.Request, id strin
 	s.mu.Unlock()
 	if changed {
 		if body.Pinned {
-			// キャッシュ付きで読み直し、次回起動時に速く読めるようにする
-			_ = s.rescan(useCache)
+			// キャッシュ付きで読み直し、次回起動時に速く読めるようにする (裏で実行)
+			go func() { _ = s.rescanSources(useCache, []*source{src}) }()
 		} else {
 			// 固定解除: リムーバブルのプライバシー方針に戻すのでキャッシュを消す
 			deleteLibraryCache(dir)
@@ -2319,7 +2332,8 @@ func (s *appState) rescanSource(w http.ResponseWriter, id string, useCache bool)
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "不明なソース ID"})
 		return
 	}
-	_ = s.rescanSources(useCache, []*source{src})
+	// 裏で実行してすぐ応答する (UI は scanning を見て合流)
+	go func() { _ = s.rescanSources(useCache, []*source{src}) }()
 	s.serveLibrary(w)
 }
 

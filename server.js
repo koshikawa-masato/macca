@@ -144,11 +144,11 @@ async function scanSource(src, useCache = true) {
     (errors.length ? `, 読み取り失敗 ${errors.length} 件` : ''));
 }
 
-async function rescan(useCache = true) {
+async function rescan(useCache = true, srcs = null) {
   if (state.scanning) return;
   state.scanning = true;
   try {
-    for (const src of state.sources.values()) {
+    for (const src of srcs ?? [...state.sources.values()]) {
       try {
         await scanSource(src, useCache);
       } catch (err) {
@@ -603,7 +603,14 @@ export async function createServer(rootDir, { useCache = true, deviceLister, ext
       removable: true, pinned: true, tracks: [], errors: [],
     });
   }
-  await rescan(useCache);
+  // 固定ソース (NAS 等) のスキャンで起動を待たせない: メインライブラリだけ先に
+  // 読んでサーバを立ち上げ、固定ソースは裏でスキャンして合流させる
+  const all = [...state.sources.values()];
+  await rescan(useCache, all.filter((s) => !s.pinned));
+  const deferred = all.filter((s) => s.pinned);
+  if (deferred.length > 0) {
+    rescan(useCache, deferred).catch(() => {});
+  }
 
   // リムーバブルソース (SDカード等) を使用中はスリープさせない。
   // 無アクセスが続くと外部ディスクが止まり、次の再生開始が起床待ちになるため

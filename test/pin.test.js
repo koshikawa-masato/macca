@@ -113,7 +113,14 @@ test('再起動: 固定ソースが記録から自動で復元・スキャンさ
   server = await startServer();
   base = server.base;
 
-  const lib = await (await fetch(`${base}/api/library`)).json();
+  // 固定ソースは起動を待たせず裏でスキャンされるので、完了まで追いかける
+  let lib;
+  for (let i = 0; i < 100; i++) {
+    lib = await (await fetch(`${base}/api/library`)).json();
+    const s = lib.sources.find((x) => x.dir === devDir);
+    if (s && s.tracks > 0 && !lib.scanning) break;
+    await new Promise((r) => setTimeout(r, 100));
+  }
   const src = lib.sources.find((s) => s.dir === devDir);
   assert.ok(src, '固定ソースが起動時に復元されている');
   assert.equal(src.pinned, true);

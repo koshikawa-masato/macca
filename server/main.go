@@ -359,8 +359,21 @@ func newState(opts options) (*appState, error) {
 		}
 		state.sources[id] = &source{ID: id, Dir: resolved, Label: label, Removable: true, Pinned: true}
 	}
-	if err := state.rescan(opts.cache); err != nil {
+	// 固定ソース (NAS 等) のスキャンで起動を待たせない: メインライブラリだけ先に
+	// 読んでサーバを立ち上げ、固定ソースは裏でスキャンして合流させる
+	var eager, deferred []*source
+	for _, src := range state.sources {
+		if src.Pinned {
+			deferred = append(deferred, src)
+		} else {
+			eager = append(eager, src)
+		}
+	}
+	if err := state.rescanSources(opts.cache, eager); err != nil {
 		return nil, err
+	}
+	if len(deferred) > 0 {
+		go func() { _ = state.rescanSources(opts.cache, deferred) }()
 	}
 	go state.keepRemovableAwake()
 	return state, nil
@@ -558,6 +571,16 @@ func (s *appState) serveLibrary(w http.ResponseWriter) {
 }
 
 func (s *appState) rescan(useCache bool) error {
+	s.mu.RLock()
+	sources := make([]*source, 0, len(s.sources))
+	for _, src := range s.sources {
+		sources = append(sources, src)
+	}
+	s.mu.RUnlock()
+	return s.rescanSources(useCache, sources)
+}
+
+func (s *appState) rescanSources(useCache bool, sources []*source) error {
 	s.mu.Lock()
 	if s.scanning {
 		s.mu.Unlock()
@@ -570,13 +593,6 @@ func (s *appState) rescan(useCache bool) error {
 		s.scanning = false
 		s.mu.Unlock()
 	}()
-
-	s.mu.RLock()
-	sources := make([]*source, 0, len(s.sources))
-	for _, src := range s.sources {
-		sources = append(sources, src)
-	}
-	s.mu.RUnlock()
 
 	for _, src := range sources {
 		// リムーバブルはキャッシュを残さない (プライバシー配慮)。

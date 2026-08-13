@@ -929,11 +929,32 @@ $('#rescan').addEventListener('click', async () => {
 
 // ---- 初期化 ---------------------------------------------------------------
 
+// サーバが裏でスキャン中 (起動直後の固定ソース読み込み等) は
+// 完了までライブラリを追いかけて、終わった分を画面に合流させる
+let scanPollTimer = null;
+function watchScanning(data) {
+  if (!data.scanning || scanPollTimer) return;
+  scanPollTimer = setInterval(async () => {
+    try {
+      const res = await fetch('/api/library');
+      const json = await res.json();
+      if (!json.scanning) {
+        clearInterval(scanPollTimer);
+        scanPollTimer = null;
+      }
+      applyLibrary(json);
+    } catch {
+      // サーバ再起動中など: 次の周期で再試行
+    }
+  }, 3000);
+}
+
 function applyLibrary(data) {
   state.tracks = data.tracks;
   state.ffmpeg = data.ffmpeg;
   state.dir = data.dir;
   state.sources = data.sources ?? [];
+  watchScanning(data);
   // サーバ実装 (Go / JS) のバッジとバージョンを曲数の左に表示
   const badge = $('#impl-badge');
   if (data.server) {

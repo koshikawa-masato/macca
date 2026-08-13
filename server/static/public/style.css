@@ -192,24 +192,6 @@ body {
   font-variant-numeric: tabular-nums;
   white-space: pre-line;
 }
-#debug-tools {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin: 6px 12px;
-}
-#debug-tools input {
-  flex: 1;
-  min-width: 0;
-  padding: 3px 6px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: transparent;
-  color: var(--fg);
-  font-size: 11px;
-}
-#debug-tools input:focus { outline: none; border-color: var(--accent); }
-
 /* ダイアログ (フォルダ選択・固定ライブラリ設定) */
 #browse-dialog,
 #settings-dialog {

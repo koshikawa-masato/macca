@@ -845,7 +845,6 @@ function setDebugMode(on) {
   clearInterval(debugTimer);
   debugTimer = null;
   panel.hidden = !on;
-  $('#debug-tools').hidden = !on;
   if (on) {
     updateDebugPanel();
     debugTimer = setInterval(updateDebugPanel, 3000);
@@ -862,13 +861,10 @@ function setDebugMode(on) {
   check.addEventListener('change', () => setDebugMode(check.checked));
 }
 
-// デバッグモード限定: マウント中デバイス配下の任意フォルダを固定ライブラリにする
-// (NAS 共有全体ではなく音楽フォルダだけを見たい場合など)
+// フォルダを固定ライブラリにする (⚙ フォルダ設定のフォルダ選択から呼ばれる)
 async function pinPath(p) {
-  const btn = $('#pin-add');
-  btn.disabled = true;
-  btn.textContent = 'スキャン中…';
   deviceOpBusy = true;
+  toast('スキャンしています…');
   try {
     const res = await fetch('/api/source', {
       method: 'POST',
@@ -878,21 +874,13 @@ async function pinPath(p) {
     const json = await res.json();
     if (!res.ok) throw new Error(json.error ?? res.status);
     applyLibrary(json);
-    $('#pin-path').value = '';
     toast('フォルダを固定ライブラリにしました');
   } catch (err) {
     toast(`固定に失敗しました: ${err.message}`);
   }
   deviceOpBusy = false;
-  btn.disabled = false;
-  btn.textContent = '固定';
   refreshDevices();
 }
-
-$('#pin-add').addEventListener('click', () => {
-  const p = $('#pin-path').value.trim();
-  if (p) pinPath(p);
-});
 
 // フォルダブラウザ: /api/browse でデバイス配下だけを辿れる
 const browseState = { path: null, parent: null };

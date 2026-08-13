@@ -515,7 +515,22 @@ export class AudioEngine {
         }
         const buf = channelsToBuffer(win.channelData, win.length, rate);
         const source = this._makeSource(buf, cur.gainNode);
-        source.start(cur.startTime + cur.nextSample / rate);
+        const when = cur.startTime + cur.nextSample / rate;
+        const now = this.ctx.currentTime;
+        if (when >= now) {
+          source.start(when);
+        } else if (cur.segments.length === 0) {
+          // 最初のセグメントのデコードが開始予定時刻に間に合わなかった
+          // (初回再生・シーク直後)。時間軸ごと実開始時刻に合わせ直すことで、
+          // 以降の窓の継ぎ目 (約15秒目) で音が重なって飛ぶのを防ぐ
+          cur.startTime += now - when;
+          this._armEndWatchdog(cur, gen);
+          source.start(now);
+        } else {
+          // 途中の窓が遅れた (読み込み待ち等): 遅れた分だけ頭を飛ばして
+          // 時間軸を守る。ズレを引きずらないので飛びはこの一瞬だけで済む
+          source.start(now, Math.min(now - when, buf.duration));
+        }
         cur.segments.push({ source, startSample: cur.nextSample, length: win.length });
         cur.nextSample += win.length;
         // 再生済みセグメントを解放 (参照を切れば AudioBuffer は GC される)

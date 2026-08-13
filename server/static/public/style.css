@@ -172,6 +172,23 @@ body {
   font-variant-numeric: tabular-nums;
   white-space: pre-line;
 }
+#debug-tools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 12px;
+}
+#debug-tools input {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg);
+  font-size: 11px;
+}
+#debug-tools input:focus { outline: none; border-color: var(--accent); }
 
 /* ---- メイン ---- */
 #content { flex: 1; overflow-y: auto; padding: 16px 20px 32px; }

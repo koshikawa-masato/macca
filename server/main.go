@@ -2130,12 +2130,15 @@ func (s *appState) addDeviceSource(w http.ResponseWriter, r *http.Request, useCa
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "接続中のデバイスではありません"})
 		return
 	}
+	// 任意のパスをスキャンさせない: マウント中デバイスの配下に限定する
 	var found *device
+	isRoot := false
 	for _, d := range listDevices() {
 		p, _ := filepath.Abs(d.Path)
-		if p == reqPath {
+		if p == reqPath || strings.HasPrefix(reqPath, p+string(filepath.Separator)) {
 			dd := d
 			found = &dd
+			isRoot = p == reqPath
 			break
 		}
 	}
@@ -2143,11 +2146,22 @@ func (s *appState) addDeviceSource(w http.ResponseWriter, r *http.Request, useCa
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "接続中のデバイスではありません"})
 		return
 	}
-	id := sourceID(found.Path)
+	label := found.Label
+	if !isRoot {
+		if st, statErr := os.Stat(reqPath); statErr != nil || !st.IsDir() {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "フォルダが見つかりません"})
+			return
+		}
+		label = filepath.Base(reqPath)
+		if label == "." || label == string(filepath.Separator) {
+			label = reqPath
+		}
+	}
+	id := sourceID(reqPath)
 	s.mu.Lock()
 	pinChanged := false
 	if s.sources[id] == nil {
-		s.sources[id] = &source{ID: id, Dir: reqPath, Label: found.Label, Removable: true, Pinned: body.Pin}
+		s.sources[id] = &source{ID: id, Dir: reqPath, Label: label, Removable: true, Pinned: body.Pin}
 		pinChanged = body.Pin
 	} else if body.Pin && s.sources[id].Removable && !s.sources[id].Pinned {
 		// スキャン済みデバイスを固定に昇格 (キャッシュ付きで読み直して次回起動を速くする)

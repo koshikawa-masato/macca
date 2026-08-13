@@ -718,7 +718,7 @@ function renderDevices() {
       <div class="dev-actions"><span class="dev-count">${count}</span>${pin}${btn}</div></div>`;
   }).join('') + offline.map((s) => `<div class="dev-row" title="${esc(s.dir)}">
       <div class="dev-name">💾 ${esc(s.label)}</div>
-      <div class="dev-actions"><span class="dev-count">未接続</span>
+      <div class="dev-actions"><span class="dev-count">${s.tracks ? `${s.tracks} 曲` : '未接続'}</span>
       <label class="dev-pin" title="固定を外すと一覧と記録から消えます"><input type="checkbox" data-unpin-remove="${s.id}" checked>固定</label></div></div>`).join('');
 
   el.querySelectorAll('[data-scan]').forEach((b) => b.addEventListener('click', async () => {
@@ -845,6 +845,7 @@ function setDebugMode(on) {
   clearInterval(debugTimer);
   debugTimer = null;
   panel.hidden = !on;
+  $('#debug-tools').hidden = !on;
   if (on) {
     updateDebugPanel();
     debugTimer = setInterval(updateDebugPanel, 3000);
@@ -860,6 +861,36 @@ function setDebugMode(on) {
   if (check.checked) setDebugMode(true);
   check.addEventListener('change', () => setDebugMode(check.checked));
 }
+
+// デバッグモード限定: マウント中デバイス配下の任意フォルダを固定ライブラリにする
+// (NAS 共有全体ではなく音楽フォルダだけを見たい場合など)
+$('#pin-add').addEventListener('click', async () => {
+  const input = $('#pin-path');
+  const p = input.value.trim();
+  if (!p) return;
+  const btn = $('#pin-add');
+  btn.disabled = true;
+  btn.textContent = 'スキャン中…';
+  deviceOpBusy = true;
+  try {
+    const res = await fetch('/api/source', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: p, pin: true }),
+    });
+    const json = await res.json();
+    if (!res.ok) throw new Error(json.error ?? res.status);
+    applyLibrary(json);
+    input.value = '';
+    toast('フォルダを固定ライブラリにしました');
+  } catch (err) {
+    toast(`固定に失敗しました: ${err.message}`);
+  }
+  deviceOpBusy = false;
+  btn.disabled = false;
+  btn.textContent = '固定';
+  refreshDevices();
+});
 
 // ---- 検索 / ナビゲーション ------------------------------------------------
 

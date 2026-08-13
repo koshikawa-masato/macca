@@ -363,7 +363,7 @@ function readJsonBody(req) {
   });
 }
 
-/** 接続中デバイスをソースとして追加してスキャンする */
+/** 接続中デバイス (またはその配下のフォルダ) をソースとして追加してスキャンする */
 async function addDeviceSource(req, res, useCache) {
   const body = await readJsonBody(req);
   const reqPath = typeof body?.path === 'string' ? path.resolve(body.path) : null;
@@ -371,16 +371,27 @@ async function addDeviceSource(req, res, useCache) {
   try {
     volumes = await state.deviceLister();
   } catch { /* 下の 400 へ */ }
-  // 任意のパスをスキャンさせない: 現在マウント中のデバイスに限定する
-  const vol = volumes.find((v) => path.resolve(v.path) === reqPath);
+  // 任意のパスをスキャンさせない: 現在マウント中のデバイスの配下に限定する
+  const vol = reqPath && volumes.find((v) => {
+    const root = path.resolve(v.path);
+    return root === reqPath || reqPath.startsWith(root + path.sep);
+  });
   if (!vol) return sendJson(res, 400, { error: '接続中のデバイスではありません' });
+  const isRoot = path.resolve(vol.path) === reqPath;
+  if (!isRoot) {
+    try {
+      if (!(await stat(reqPath)).isDirectory()) throw new Error();
+    } catch {
+      return sendJson(res, 400, { error: 'フォルダが見つかりません' });
+    }
+  }
 
-  const id = sourceId(vol.path);
+  const id = sourceId(reqPath);
   const existing = state.sources.get(id);
   if (!existing) {
     const src = {
-      id, dir: vol.path, label: vol.label, removable: true,
-      pinned: Boolean(body?.pin), tracks: [], errors: [],
+      id, dir: reqPath, label: isRoot ? vol.label : (path.basename(reqPath) || reqPath),
+      removable: true, pinned: Boolean(body?.pin), tracks: [], errors: [],
     };
     state.sources.set(id, src);
     try {

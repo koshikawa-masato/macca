@@ -7,7 +7,7 @@
 
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
+import { mkdtemp, rm, mkdir, writeFile, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { buildWav } from './fixtures.js';
@@ -129,4 +129,32 @@ test('取り外し: 固定ソースを外すと記録も消える', async () => 
   const json = await res.json();
   assert.ok(!json.sources.some((s) => s.dir === devDir));
   assert.deepEqual(await readConfig(), { pinned: [] });
+});
+
+test('サブフォルダ固定: デバイス配下のフォルダだけをソースにできる', async () => {
+  const subDir = path.join(devDir, 'music');
+  await mkdir(subDir, { recursive: true });
+  await writeFile(path.join(subDir, 'inner.wav'),
+    buildWav({ title: 'サブフォルダの曲', artist: 'C', album: 'Z' }));
+
+  const { status, json } = await postJson(`${base}/api/source`, { path: subDir, pin: true });
+  assert.equal(status, 200);
+  const src = json.sources.find((s) => s.dir === subDir);
+  assert.ok(src, 'サブフォルダがソースとして追加されている');
+  assert.equal(src.label, 'music');
+  assert.equal(src.pinned, true);
+  assert.ok(json.tracks.some((t) => t.title === 'サブフォルダの曲'));
+  assert.deepEqual(await readConfig(), { pinned: [subDir] });
+
+  // 後始末: 取り外して記録も消えることを確認
+  const del = await fetch(`${base}/api/source/${src.id}`, { method: 'DELETE' });
+  assert.equal(del.status, 200);
+  assert.deepEqual(await readConfig(), { pinned: [] });
+});
+
+test('サブフォルダ固定: デバイス外のパスと実在しないフォルダは 400', async () => {
+  const outside = await postJson(`${base}/api/source`, { path: libDir, pin: true });
+  assert.equal(outside.status, 400);
+  const missing = await postJson(`${base}/api/source`, { path: path.join(devDir, 'no-such-dir'), pin: true });
+  assert.equal(missing.status, 400);
 });

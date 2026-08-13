@@ -703,7 +703,6 @@ function renderDevices() {
     el.innerHTML = '<div class="dev-empty">未接続</div>';
     return;
   }
-  const pinTitle = '固定ライブラリにする: 次回起動時も自動で読み込む (スキャン結果を保存)。解除は ⚙ フォルダ設定から';
   el.innerHTML = devices.map((d) => {
     const src = sources.find((s) => s.id === d.id);
     let count = src ? `${src.tracks} 曲` : '';
@@ -714,11 +713,10 @@ function renderDevices() {
       actions = `<span class="pin-badge" title="固定ライブラリ (解除は ⚙ フォルダ設定から)">固定中</span>
         <button class="dev-btn" data-rescan="${d.id}" title="このデバイスだけ読み直す">再スキャン</button>`;
     } else if (d.scanned) {
-      actions = `<button class="dev-btn" data-eject="${d.id}" title="一覧から外す (ファイルには触れません)">✕</button>
-        <button class="dev-btn accent" data-pin-btn="${esc(d.path)}" title="${pinTitle}">フォルダ固定</button>`;
+      actions = `<button class="dev-btn" data-eject="${d.id}" title="一覧から外す (ファイルには触れません)">✕</button>`;
     } else {
-      actions = `<button class="dev-btn" data-scan="${esc(d.path)}">スキャン</button>
-        <button class="dev-btn accent" data-pin-btn="${esc(d.path)}" title="${pinTitle}">フォルダ固定</button>`;
+      // 固定は ⚙ フォルダ設定から行う。ここは今回だけのスキャンのみ
+      actions = `<button class="dev-btn" data-scan="${esc(d.path)}">スキャン</button>`;
     }
     return `<div class="dev-row" title="${esc(d.path)}">
       <div class="dev-name">💾 ${esc(d.label)}</div>
@@ -773,11 +771,6 @@ function renderDevices() {
     }
     deviceOpBusy = false;
     refreshDevices();
-  }));
-  el.querySelectorAll('[data-pin-btn]').forEach((b) => b.addEventListener('click', async () => {
-    b.disabled = true;
-    b.textContent = 'スキャン中…';
-    await pinPath(b.dataset.pinBtn);
   }));
   el.querySelectorAll('[data-rescan]').forEach((b) => b.addEventListener('click', async () => {
     deviceOpBusy = true;

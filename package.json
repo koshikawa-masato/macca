@@ -1,6 +1,6 @@
 {
   "name": "macca",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "iTunes 不要のローカル音楽ライブラリ管理・再生 Web アプリ（mp3 / AIFF / ALAC / FLAC / WAV 対応、依存パッケージゼロ）",
   "type": "module",
   "main": "server.js",

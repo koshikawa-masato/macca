@@ -813,6 +813,10 @@ async function updateDebugPanel() {
   if (performance.memory) {
     lines.push(`ブラウザ: ヒープ ${(performance.memory.usedJSHeapSize / 1048576).toFixed(1)} MB`);
   }
+  // ソースごとの直近スキャン所要 (「遅い」と感じたときに数字で確認できる)
+  const scans = (state.sources ?? []).filter((s) => s.scanSeconds > 0)
+    .map((s) => `${s.label} ${s.scanSeconds.toFixed(1)}s`).join(' · ');
+  if (scans) lines.push(`スキャン: ${scans}`);
   if (engine?.current) {
     const c = engine.current;
     lines.push(c.kind === 'stream'

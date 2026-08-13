@@ -140,7 +140,8 @@ async function scanSource(src, useCache = true) {
   });
   src.tracks = tracks.map((t) => ({ ...t, src: src.id }));
   src.errors = errors;
-  console.log(`スキャン完了: ${tracks.length} 曲 (${((Date.now() - t0) / 1000).toFixed(1)} 秒)` +
+  src.scanSeconds = (Date.now() - t0) / 1000; // 直近スキャンの所要 (デバッグ表示用)
+  console.log(`スキャン完了: ${tracks.length} 曲 (${src.scanSeconds.toFixed(1)} 秒)` +
     (errors.length ? `, 読み取り失敗 ${errors.length} 件` : ''));
 }
 
@@ -277,6 +278,7 @@ function serveLibrary(res) {
     pinned: Boolean(s.pinned),
     tracks: s.tracks.length,
     errors: s.errors.length,
+    scanSeconds: s.scanSeconds ?? 0,
   }));
   sendJson(res, 200, {
     dir: state.rootDir,

@@ -128,10 +128,11 @@ type source struct {
 	ID        string
 	Dir       string
 	Label     string
-	Removable bool
-	Pinned    bool // UI で固定されたソース: 次回起動時も自動読み込み + キャッシュ使用
-	Tracks    []track
-	Errors    []scanError
+	Removable   bool
+	Pinned      bool    // UI で固定されたソース: 次回起動時も自動読み込み + キャッシュ使用
+	ScanSeconds float64 // 直近スキャンの所要秒数 (デバッグ表示用)
+	Tracks      []track
+	Errors      []scanError
 }
 
 type scanError struct {
@@ -140,13 +141,14 @@ type scanError struct {
 }
 
 type librarySource struct {
-	ID        string `json:"id"`
-	Dir       string `json:"dir"`
-	Label     string `json:"label"`
-	Removable bool   `json:"removable"`
-	Pinned    bool   `json:"pinned"`
-	Tracks    int    `json:"tracks"`
-	Errors    int    `json:"errors"`
+	ID          string  `json:"id"`
+	Dir         string  `json:"dir"`
+	Label       string  `json:"label"`
+	Removable   bool    `json:"removable"`
+	Pinned      bool    `json:"pinned"`
+	Tracks      int     `json:"tracks"`
+	Errors      int     `json:"errors"`
+	ScanSeconds float64 `json:"scanSeconds"`
 }
 
 type libraryResponse struct {
@@ -576,6 +578,7 @@ func (s *appState) serveLibrary(w http.ResponseWriter) {
 		sources = append(sources, librarySource{
 			ID: src.ID, Dir: src.Dir, Label: src.Label, Removable: src.Removable,
 			Pinned: src.Pinned, Tracks: len(src.Tracks), Errors: errs,
+			ScanSeconds: src.ScanSeconds,
 		})
 	}
 	outTracks := make([]clientTrack, 0, len(s.tracks))
@@ -623,6 +626,7 @@ func (s *appState) rescanSources(useCache bool, sources []*source) error {
 	for _, src := range sources {
 		// リムーバブルはキャッシュを残さない (プライバシー配慮)。
 		// ただし「固定」ソースはユーザーが記録を許可したものとして扱う
+		t0 := time.Now()
 		tracks, errs := scanLibrary(src.Dir, useCache && (!src.Removable || src.Pinned))
 		s.mu.Lock()
 		src.Tracks = tracks
@@ -630,7 +634,9 @@ func (s *appState) rescanSources(useCache bool, sources []*source) error {
 			src.Tracks[i].Src = src.ID
 		}
 		src.Errors = errs
+		src.ScanSeconds = time.Since(t0).Seconds() // 直近スキャンの所要 (デバッグ表示用)
 		s.mu.Unlock()
+		fmt.Printf("スキャン完了: %s %d曲 (%.1f秒)\n", src.Label, len(tracks), src.ScanSeconds)
 	}
 	s.rebuildIndex()
 	// スキャン中の一時確保 (タグ読み) を OS に返して待機時 RSS を抑える

@@ -703,23 +703,29 @@ function renderDevices() {
     el.innerHTML = '<div class="dev-empty">未接続</div>';
     return;
   }
-  const pinTitle = '固定ライブラリ: 次回起動時も自動で読み込む (スキャン結果を保存)';
+  const pinTitle = '固定ライブラリにする: 次回起動時も自動で読み込む (スキャン結果を保存)。解除は ⚙ フォルダ設定から';
   el.innerHTML = devices.map((d) => {
     const src = sources.find((s) => s.id === d.id);
     const count = src ? `${src.tracks} 曲` : '';
     const pinned = Boolean(src?.pinned);
-    const pin = `<label class="dev-pin" title="${pinTitle}"><input type="checkbox" data-pin="${d.id}" data-path="${esc(d.path)}"${pinned ? ' checked' : ''}>固定</label>`;
-    const btn = pinned ? ''
-      : d.scanned
-        ? `<button class="dev-btn" data-eject="${d.id}" title="一覧から外す (ファイルには触れません)">✕</button>`
-        : `<button class="dev-btn" data-scan="${esc(d.path)}">スキャン</button>`;
+    let actions;
+    if (pinned) {
+      actions = `<span class="pin-badge" title="固定ライブラリ (解除は ⚙ フォルダ設定から)">固定中</span>
+        <button class="dev-btn" data-rescan="${d.id}" title="このデバイスだけ読み直す">再スキャン</button>`;
+    } else if (d.scanned) {
+      actions = `<button class="dev-btn" data-eject="${d.id}" title="一覧から外す (ファイルには触れません)">✕</button>
+        <button class="dev-btn accent" data-pin-btn="${esc(d.path)}" title="${pinTitle}">フォルダ固定</button>`;
+    } else {
+      actions = `<button class="dev-btn" data-scan="${esc(d.path)}">スキャン</button>
+        <button class="dev-btn accent" data-pin-btn="${esc(d.path)}" title="${pinTitle}">フォルダ固定</button>`;
+    }
     return `<div class="dev-row" title="${esc(d.path)}">
       <div class="dev-name">💾 ${esc(d.label)}</div>
-      <div class="dev-actions"><span class="dev-count">${count}</span>${pin}${btn}</div></div>`;
+      <div class="dev-actions"><span class="dev-count">${count}</span>${actions}</div></div>`;
   }).join('') + offline.map((s) => `<div class="dev-row" title="${esc(s.dir)}">
       <div class="dev-name">💾 ${esc(s.label)}</div>
       <div class="dev-actions"><span class="dev-count">${s.tracks ? `${s.tracks} 曲` : '未接続'}</span>
-      <label class="dev-pin" title="固定を外すと一覧と記録から消えます"><input type="checkbox" data-unpin-remove="${s.id}" checked>固定</label></div></div>`).join('');
+      <span class="pin-badge">固定中</span></div></div>`).join('');
 
   el.querySelectorAll('[data-scan]').forEach((b) => b.addEventListener('click', async () => {
     deviceOpBusy = true;
@@ -754,47 +760,23 @@ function renderDevices() {
     deviceOpBusy = false;
     refreshDevices();
   }));
-  el.querySelectorAll('[data-pin]').forEach((c) => c.addEventListener('change', async () => {
-    deviceOpBusy = true;
-    c.disabled = true;
-    const scanned = devices.find((d) => d.id === c.dataset.pin)?.scanned;
-    // 未スキャンから固定する場合はスキャンを伴うので進行表示を出す
-    const countEl = c.closest('.dev-row')?.querySelector('.dev-count');
-    if (c.checked && !scanned && countEl) countEl.textContent = 'スキャン中…';
-    try {
-      // 未スキャンのデバイスを固定にした場合はスキャンと固定を一度に行う
-      const res = c.checked && !scanned
-        ? await fetch('/api/source', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ path: c.dataset.path, pin: true }),
-          })
-        : await fetch(`/api/source/${c.dataset.pin}/pin`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ pinned: c.checked }),
-          });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error ?? res.status);
-      applyLibrary(json);
-      toast(c.checked ? '固定ライブラリにしました (次回起動時も自動で読み込みます)' : '固定を解除しました');
-    } catch (err) {
-      toast(`固定の変更に失敗しました: ${err.message}`);
-    }
-    deviceOpBusy = false;
-    refreshDevices();
+  el.querySelectorAll('[data-pin-btn]').forEach((b) => b.addEventListener('click', async () => {
+    b.disabled = true;
+    b.textContent = 'スキャン中…';
+    await pinPath(b.dataset.pinBtn);
   }));
-  el.querySelectorAll('[data-unpin-remove]').forEach((c) => c.addEventListener('change', async () => {
+  el.querySelectorAll('[data-rescan]').forEach((b) => b.addEventListener('click', async () => {
     deviceOpBusy = true;
-    c.disabled = true;
+    b.disabled = true;
+    b.textContent = 'スキャン中…';
     try {
-      const res = await fetch(`/api/source/${c.dataset.unpinRemove}`, { method: 'DELETE' });
+      const res = await fetch(`/api/source/${b.dataset.rescan}/rescan`, { method: 'POST' });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error ?? res.status);
       applyLibrary(json);
-      toast('固定を解除しました');
+      toast('再スキャン完了');
     } catch (err) {
-      toast(`固定の解除に失敗しました: ${err.message}`);
+      toast(`再スキャンに失敗しました: ${err.message}`);
     }
     deviceOpBusy = false;
     refreshDevices();
@@ -927,9 +909,27 @@ function renderPinnedList() {
           <div>💾 ${esc(s.label)} <span class="dev-count">${s.tracks} 曲</span></div>
           <div class="pinned-dir">${esc(s.dir)}</div>
         </div>
+        <button class="dev-btn" data-pinned-rescan="${s.id}" title="この場所だけ読み直す">再スキャン</button>
         <button class="dev-btn" data-unpin="${s.id}" title="固定をやめてライブラリから外す (ファイルには触れません)">解除</button>
       </div>`).join('')
     : '<div class="dev-empty">固定した場所はありません</div>';
+  list.querySelectorAll('[data-pinned-rescan]').forEach((b) => b.addEventListener('click', async () => {
+    deviceOpBusy = true;
+    b.disabled = true;
+    b.textContent = 'スキャン中…';
+    try {
+      const res = await fetch(`/api/source/${b.dataset.pinnedRescan}/rescan`, { method: 'POST' });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error ?? res.status);
+      applyLibrary(json);
+      toast('再スキャン完了');
+    } catch (err) {
+      toast(`再スキャンに失敗しました: ${err.message}`);
+    }
+    deviceOpBusy = false;
+    renderPinnedList();
+    refreshDevices();
+  }));
   list.querySelectorAll('[data-unpin]').forEach((b) => b.addEventListener('click', async () => {
     b.disabled = true;
     deviceOpBusy = true;

@@ -468,6 +468,20 @@ async function setSourcePin(req, res, id, useCache) {
   return serveLibrary(res);
 }
 
+/** ソース単体を再スキャンする (固定ソースの内容更新用。全体の /api/rescan より軽い) */
+async function rescanSource(res, id, useCache) {
+  const src = state.sources.get(id);
+  if (!src) return notFound(res, '不明なソース ID');
+  try {
+    await scanSource(src, useCache);
+  } catch (err) {
+    src.tracks = [];
+    src.errors = [{ path: src.dir, error: String(err?.message ?? err) }];
+  }
+  rebuildIndex();
+  return serveLibrary(res);
+}
+
 /** デバイスソースを一覧から外す (ファイルには触れない) */
 async function removeDeviceSource(res, id) {
   const src = state.sources.get(id);
@@ -681,6 +695,8 @@ export async function createServer(rootDir, { useCache = true, deviceLister, ext
       }
       const mp = /^\/api\/source\/([0-9a-f]{12})\/pin$/.exec(p);
       if (mp && req.method === 'POST') return setSourcePin(req, res, mp[1], useCache);
+      const mr = /^\/api\/source\/([0-9a-f]{12})\/rescan$/.exec(p);
+      if (mr && req.method === 'POST') return rescanSource(res, mr[1], useCache);
       const ms = /^\/api\/source\/([0-9a-f]{12})$/.exec(p);
       if (ms && req.method === 'DELETE') return removeDeviceSource(res, ms[1]);
 

@@ -186,3 +186,24 @@ test('サブフォルダ固定: デバイス外のパスと実在しないフォ
   const missing = await postJson(`${base}/api/source`, { path: path.join(devDir, 'no-such-dir'), pin: true });
   assert.equal(missing.status, 400);
 });
+
+test('ソース単体の再スキャン: 追加ファイルが反映される', async () => {
+  // 固定ソースとして追加し直す
+  const { status, json } = await postJson(`${base}/api/source`, { path: devDir, pin: true });
+  assert.equal(status, 200);
+  const src = json.sources.find((s) => s.dir === devDir);
+  const before = src.tracks;
+
+  await writeFile(path.join(devDir, 'new.wav'),
+    buildWav({ title: 'あとから追加した曲', artist: 'D', album: 'W' }));
+  const res = await fetch(`${base}/api/source/${src.id}/rescan`, { method: 'POST' });
+  assert.equal(res.status, 200);
+  const lib = await res.json();
+  assert.equal(lib.sources.find((s) => s.dir === devDir).tracks, before + 1);
+  assert.ok(lib.tracks.some((t) => t.title === 'あとから追加した曲'));
+  assert.equal(lib.sources.find((s) => s.dir === devDir).pinned, true, '再スキャンしても固定は維持');
+
+  // 不明 ID は 404
+  const bad = await fetch(`${base}/api/source/000000000000/rescan`, { method: 'POST' });
+  assert.equal(bad.status, 404);
+});

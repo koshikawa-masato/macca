@@ -468,6 +468,13 @@ func (s *appState) serveAPI(w http.ResponseWriter, r *http.Request, useCache boo
 			return
 		}
 		s.setSourcePin(w, r, id, useCache)
+	case strings.HasPrefix(p, "/api/source/") && strings.HasSuffix(p, "/rescan") && r.Method == http.MethodPost:
+		id := strings.TrimSuffix(strings.TrimPrefix(p, "/api/source/"), "/rescan")
+		if len(id) != 12 {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+			return
+		}
+		s.rescanSource(w, id, useCache)
 	case strings.HasPrefix(p, "/api/source/") && r.Method == http.MethodDelete:
 		id := strings.TrimPrefix(p, "/api/source/")
 		if len(id) != 12 {
@@ -2287,6 +2294,19 @@ func (s *appState) setSourcePin(w http.ResponseWriter, r *http.Request, id strin
 		}
 		s.savePinnedDirs()
 	}
+	s.serveLibrary(w)
+}
+
+// rescanSource はソース単体を再スキャンする (固定ソースの内容更新用)。
+func (s *appState) rescanSource(w http.ResponseWriter, id string, useCache bool) {
+	s.mu.RLock()
+	src := s.sources[id]
+	s.mu.RUnlock()
+	if src == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "不明なソース ID"})
+		return
+	}
+	_ = s.rescanSources(useCache, []*source{src})
 	s.serveLibrary(w)
 }
 

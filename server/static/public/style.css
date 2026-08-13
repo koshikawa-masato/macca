@@ -162,17 +162,16 @@ body {
 }
 .dev-btn:hover:not(:disabled) { color: var(--accent); border-color: var(--accent); }
 .dev-btn:disabled { opacity: 0.6; cursor: default; }
-.dev-pin {
+.dev-btn.accent { color: var(--accent); border-color: var(--accent-dim); }
+.dev-btn.accent:hover:not(:disabled) { border-color: var(--accent); }
+.pin-badge {
   flex-shrink: 0;
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  font-size: 11px;
-  color: var(--fg-dim);
-  cursor: pointer;
+  font-size: 10.5px;
+  color: var(--accent);
+  border: 1px solid var(--accent-dim);
+  border-radius: 10px;
+  padding: 2px 8px;
 }
-.dev-pin input { margin: 0; accent-color: var(--accent); cursor: pointer; }
-.dev-pin:hover { color: var(--accent); }
 
 /* ---- デバッグモード ---- */
 #debug-toggle {

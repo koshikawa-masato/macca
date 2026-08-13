@@ -706,10 +706,11 @@ function renderDevices() {
   const pinTitle = '固定ライブラリにする: 次回起動時も自動で読み込む (スキャン結果を保存)。解除は ⚙ フォルダ設定から';
   el.innerHTML = devices.map((d) => {
     const src = sources.find((s) => s.id === d.id);
-    const count = src ? `${src.tracks} 曲` : '';
+    let count = src ? `${src.tracks} 曲` : '';
     const pinned = Boolean(src?.pinned);
     let actions;
     if (pinned) {
+      if (src && src.tracks === 0 && state.scanning) count = 'スキャン中…';
       actions = `<span class="pin-badge" title="固定ライブラリ (解除は ⚙ フォルダ設定から)">固定中</span>
         <button class="dev-btn" data-rescan="${d.id}" title="このデバイスだけ読み直す">再スキャン</button>`;
     } else if (d.scanned) {
@@ -722,10 +723,23 @@ function renderDevices() {
     return `<div class="dev-row" title="${esc(d.path)}">
       <div class="dev-name">💾 ${esc(d.label)}</div>
       <div class="dev-actions"><span class="dev-count">${count}</span>${actions}</div></div>`;
-  }).join('') + offline.map((s) => `<div class="dev-row" title="${esc(s.dir)}">
+  }).join('') + offline.map((s) => {
+    // デバイス一覧に該当しない固定ソース (サブフォルダ等)。マウント中の
+    // デバイス配下なら生きているので、未接続と混同しないよう表示し分ける
+    const mounted = devices.some((d) => {
+      const sep = d.path.includes('\\') ? '\\' : '/';
+      return s.dir === d.path || s.dir.startsWith(d.path.endsWith(sep) ? d.path : d.path + sep);
+    });
+    const countText = s.tracks ? `${s.tracks} 曲`
+      : mounted ? (state.scanning ? 'スキャン中…' : '0 曲')
+      : '未接続';
+    const rescanBtn = mounted
+      ? `<button class="dev-btn" data-rescan="${s.id}" title="この場所だけ読み直す">再スキャン</button>` : '';
+    return `<div class="dev-row" title="${esc(s.dir)}">
       <div class="dev-name">💾 ${esc(s.label)}</div>
-      <div class="dev-actions"><span class="dev-count">${s.tracks ? `${s.tracks} 曲` : '未接続'}</span>
-      <span class="pin-badge">固定中</span></div></div>`).join('');
+      <div class="dev-actions"><span class="dev-count">${countText}</span>
+      <span class="pin-badge">固定中</span>${rescanBtn}</div></div>`;
+  }).join('');
 
   el.querySelectorAll('[data-scan]').forEach((b) => b.addEventListener('click', async () => {
     deviceOpBusy = true;
@@ -1017,6 +1031,7 @@ function applyLibrary(data) {
   state.ffmpeg = data.ffmpeg;
   state.dir = data.dir;
   state.sources = data.sources ?? [];
+  state.scanning = Boolean(data.scanning);
   watchScanning(data);
   // サーバ実装 (Go / JS) のバッジとバージョンを曲数の左に表示
   const badge = $('#impl-badge');

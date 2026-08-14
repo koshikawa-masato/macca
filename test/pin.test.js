@@ -192,6 +192,31 @@ test('フォルダ参照: デバイス配下だけを辿れる', async () => {
   assert.equal(bad.status, 400);
 });
 
+test('設定 API: PUT でマージ保存され GET で返る', async () => {
+  const put1 = await fetch(`${base}/api/settings`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ normalize: true }),
+  });
+  assert.equal(put1.status, 200);
+  const put2 = await fetch(`${base}/api/settings`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ volume: 80 }),
+  });
+  assert.equal(put2.status, 200);
+  const got = await (await fetch(`${base}/api/settings`)).json();
+  assert.equal(got.normalize, true, 'マージで既存キーが残る');
+  assert.equal(got.volume, 80);
+
+  const bad = await fetch(`${base}/api/settings`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify([1, 2]),
+  });
+  assert.equal(bad.status, 400);
+});
+
 test('サブフォルダ固定: デバイス外のパスと実在しないフォルダは 400', async () => {
   const outside = await postJson(`${base}/api/source`, { path: libDir, pin: true });
   assert.equal(outside.status, 400);

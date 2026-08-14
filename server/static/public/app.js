@@ -746,19 +746,56 @@ const modeSel = $('#play-mode');
 }
 modeSel.addEventListener('change', () => {
   state.playMode = modeSel.value;
-  localStorage.setItem('macca-playmode', state.playMode);
+  saveSetting('playMode', state.playMode);
   state.shuffleBag = [];
   if (state.mode === 'engine') engine?.refreshNext(); // 先読み済みの次曲を取り直す
 });
 
+// ---- サーバ保存の UI 設定 -------------------------------------------------
+// 多重起動でポートが変わると localStorage は別サイト扱いで引き継がれないため、
+// 音量正規化・デバッグ・再生モード・音量はサーバ側 (~/.config/macca) に保存する
+
+let settingsCache = {};
+
+function saveSetting(key, value) {
+  if (settingsCache[key] === value) return;
+  settingsCache[key] = value;
+  fetch('/api/settings', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ [key]: value }),
+  }).catch(() => { /* 旧サーバ等: 保存できなくても再生には影響しない */ });
+}
+
+function applyServerSettings(s) {
+  settingsCache = s ?? {};
+  if (typeof s?.normalize === 'boolean') {
+    state.normalize = s.normalize;
+    engine?.setNormalization(state.normalize);
+    normBtn.classList.toggle('on', state.normalize);
+  }
+  if (['repeat-all', 'album', 'one', 'repeat-one', 'repeat-album', 'shuffle-album'].includes(s?.playMode)) {
+    state.playMode = s.playMode;
+    modeSel.value = s.playMode;
+  }
+  if (typeof s?.volume === 'number' && isFinite(s.volume)) {
+    volbar.value = Math.min(100, Math.max(0, s.volume));
+    audio.volume = volbar.value / 100;
+    engine?.setVolume(volbar.value / 100);
+  }
+  if (typeof s?.debug === 'boolean' && s.debug !== !$('#debug-hud').hidden) {
+    setDebugMode(s.debug);
+  }
+}
+
 const volbar = $('#volbar');
-volbar.value = localStorage.getItem('macca-volume') ?? 100;
+volbar.value = localStorage.getItem('macca-volume') ?? 100; // 旧版からの移行用初期値
 audio.volume = volbar.value / 100;
 engine?.setVolume(volbar.value / 100);
 volbar.addEventListener('input', () => {
   audio.volume = volbar.value / 100;
   engine?.setVolume(volbar.value / 100);
-  localStorage.setItem('macca-volume', volbar.value);
+  saveSetting('volume', Number(volbar.value));
 });
 
 const normBtn = $('#btn-norm');
@@ -768,7 +805,7 @@ if (engine) {
     state.normalize = !state.normalize;
     engine.setNormalization(state.normalize);
     normBtn.classList.toggle('on', state.normalize);
-    localStorage.setItem('macca-normalize', state.normalize ? '1' : '0');
+    saveSetting('normalize', state.normalize);
     toast(state.normalize ? '音量正規化: オン (曲間の音量差を揃えます)' : '音量正規化: オフ');
   });
 } else {
@@ -968,7 +1005,7 @@ function setDebugMode(on) {
   } else {
     document.title = state.playing ? `${state.playing.title} — macca` : 'macca — ローカル音楽ライブラリ';
   }
-  localStorage.setItem('macca-debug', on ? '1' : '0');
+  saveSetting('debug', on);
 }
 
 {
@@ -1178,6 +1215,11 @@ function applyLibrary(data) {
 (async function init() {
   const hashView = location.hash.replace('#', '');
   if (['songs', 'albums', 'artists'].includes(hashView)) state.view = hashView;
+  // サーバ保存の UI 設定を復元 (どのポートで開いても同じ設定になる)
+  try {
+    const res = await fetch('/api/settings');
+    if (res.ok) applyServerSettings(await res.json());
+  } catch { /* 旧サーバ: localStorage の初期値のまま動く */ }
   try {
     const res = await fetch('/api/library');
     applyLibrary(await res.json());

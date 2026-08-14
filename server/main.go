@@ -505,6 +505,8 @@ func (s *appState) serveAPI(w http.ResponseWriter, r *http.Request, useCache boo
 		s.serveDevices(w)
 	case p == "/api/browse" && r.Method == http.MethodGet:
 		s.serveBrowse(w, r)
+	case p == "/api/settings" && (r.Method == http.MethodGet || r.Method == http.MethodPut):
+		serveSettings(w, r)
 	case p == "/api/source" && r.Method == http.MethodPost:
 		s.addDeviceSource(w, r, useCache)
 	case strings.HasPrefix(p, "/api/source/") && strings.HasSuffix(p, "/pin") && r.Method == http.MethodPost:
@@ -932,6 +934,46 @@ func configDir() string {
 
 func sourcesFile() string {
 	return filepath.Join(configDir(), "sources.json")
+}
+
+// UI 設定 (音量正規化・デバッグ表示など)。ポートが変わっても引き継がれるよう
+// ブラウザの localStorage ではなくサーバ側に保存する
+func settingsFile() string {
+	return filepath.Join(configDir(), "settings.json")
+}
+
+func loadSettingsFile() map[string]any {
+	data, err := os.ReadFile(settingsFile())
+	if err != nil {
+		return map[string]any{}
+	}
+	var obj map[string]any
+	if json.Unmarshal(data, &obj) != nil || obj == nil {
+		return map[string]any{}
+	}
+	return obj
+}
+
+func serveSettings(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		writeJSON(w, http.StatusOK, loadSettingsFile())
+		return
+	}
+	var body map[string]any
+	if err := json.NewDecoder(io.LimitReader(r.Body, 64*1024)).Decode(&body); err != nil || body == nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "不正な設定"})
+		return
+	}
+	merged := loadSettingsFile()
+	for k, v := range body {
+		merged[k] = v
+	}
+	if err := os.MkdirAll(configDir(), 0o755); err == nil {
+		if data, err := json.MarshalIndent(merged, "", "  "); err == nil {
+			_ = os.WriteFile(settingsFile(), append(data, '\n'), 0o644)
+		}
+	}
+	writeJSON(w, http.StatusOK, merged)
 }
 
 func loadPinnedDirs() []string {

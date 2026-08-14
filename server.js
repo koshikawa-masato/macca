@@ -110,6 +110,41 @@ function loadPinnedDirs() {
   }
 }
 
+// UI 設定 (音量正規化・デバッグ表示など)。ポートが変わっても引き継がれるよう
+// ブラウザの localStorage ではなくサーバ側に保存する
+function settingsFile() {
+  return path.join(configDir(), 'settings.json');
+}
+
+function loadSettingsFile() {
+  try {
+    const json = JSON.parse(readFileSync(settingsFile(), 'utf8'));
+    return json && typeof json === 'object' && !Array.isArray(json) ? json : {};
+  } catch {
+    return {};
+  }
+}
+
+async function saveSettingsFile(obj) {
+  try {
+    await mkdir(configDir(), { recursive: true });
+    await writeFile(settingsFile(), JSON.stringify(obj, null, 2) + '\n');
+  } catch (err) {
+    console.error(`設定の保存に失敗しました: ${err?.message ?? err}`);
+  }
+}
+
+async function serveSettings(req, res) {
+  if (req.method === 'GET') return sendJson(res, 200, loadSettingsFile());
+  const body = await readJsonBody(req);
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return sendJson(res, 400, { error: '不正な設定' });
+  }
+  const merged = { ...loadSettingsFile(), ...body };
+  await saveSettingsFile(merged);
+  return sendJson(res, 200, merged);
+}
+
 async function savePinnedDirs() {
   const dirs = [...state.sources.values()].filter((s) => s.pinned).map((s) => s.dir);
   try {
@@ -696,6 +731,9 @@ export async function createServer(rootDir, { useCache = true, deviceLister, ext
       if (p === '/api/stats') return serveStats(res);
       if (p === '/api/devices') return serveDevices(res);
       if (p === '/api/browse') return serveBrowse(res, url.searchParams);
+      if (p === '/api/settings' && (req.method === 'GET' || req.method === 'PUT')) {
+        return serveSettings(req, res);
+      }
       if (p === '/api/source' && req.method === 'POST') {
         return addDeviceSource(req, res, useCache);
       }

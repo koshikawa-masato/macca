@@ -189,7 +189,13 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  user-select: none; /* ダブルクリック切替で文字選択させない */
+  cursor: default;
 }
+/* 非活性ソース: 曲一覧・集計から外れている状態 */
+.dev-row.dis .dev-name,
+.dev-row.dis .dev-count { opacity: 0.4; }
+.dev-row.dis .dev-name { text-decoration: line-through; }
 .dev-actions {
   display: flex;
   align-items: center;

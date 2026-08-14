@@ -14,6 +14,12 @@ const state = {
   filterAlbum: null,      // 選択中のアルバムキー (サイドバーに残る)
   albumActive: false,     // いま選択中アルバムの曲を表示しているか
   excludedFormats: new Set(), // フィルタから外した形式 (既定は全形式が対象)
+  // 非活性にしたソース (ダブルクリックで切替)。このブラウザ固有の好みなので
+  // サーバ設定ではなく localStorage に保存する
+  disabledSources: new Set((() => {
+    try { return JSON.parse(localStorage.getItem('macca-disabled-sources') ?? '[]'); }
+    catch { return []; }
+  })()),
   sortKey: null,
   sortAsc: true,
   renderLimit: 1000,
@@ -124,8 +130,14 @@ function toast(msg, ms = 3500) {
 
 // ---- フィルタリング -------------------------------------------------------
 
+/** 非活性ソースを除いた全曲 (統計・フォーマット集計にも使う) */
+function activeTracks() {
+  if (state.disabledSources.size === 0) return state.tracks;
+  return state.tracks.filter((t) => !state.disabledSources.has(t.src));
+}
+
 function visibleTracks() {
-  let list = state.tracks;
+  let list = activeTracks();
   // 選択中アーティスト/アルバムでの絞り込みは曲リスト表示のときだけ
   if (state.filterArtist !== null && state.artistActive && state.view === 'songs') {
     list = list.filter((t) => (t.artist ?? '') === state.filterArtist || (t.albumArtist ?? '') === state.filterArtist);
@@ -417,7 +429,7 @@ window.addEventListener('hashchange', () => {
 
 function renderFormatChips() {
   const formats = new Map();
-  for (const t of state.tracks) {
+  for (const t of activeTracks()) {
     const l = formatLabel(t);
     formats.set(l, (formats.get(l) ?? 0) + 1);
   }
@@ -445,10 +457,10 @@ function renderFormatChips() {
 }
 
 function renderStats() {
-  const totalDur = state.tracks.reduce((s, t) => s + (t.duration ?? 0), 0);
-  const totalSize = state.tracks.reduce((s, t) => s + t.size, 0);
+  const totalDur = activeTracks().reduce((s, t) => s + (t.duration ?? 0), 0);
+  const totalSize = activeTracks().reduce((s, t) => s + t.size, 0);
   $('#stats').textContent =
-    `${state.tracks.length.toLocaleString()} 曲 · ${(totalDur / 3600).toFixed(1)} 時間 · ${fmtSize(totalSize)}`;
+    `${activeTracks().length.toLocaleString()} 曲 · ${(totalDur / 3600).toFixed(1)} 時間 · ${fmtSize(totalSize)}`;
 }
 
 // ---- 再生 -----------------------------------------------------------------
@@ -492,7 +504,7 @@ function playFromList(id) {
     // アルバムの一部しか見えていない場合は、既定のディスク順 → トラック順
     const key = albumKey(t);
     const inView = visible.filter((x) => albumKey(x) === key);
-    const whole = state.tracks.filter((x) => albumKey(x) === key);
+    const whole = activeTracks().filter((x) => albumKey(x) === key);
     state.queue = inView.length === whole.length
       ? inView
       : whole.sort((a, b) => (a.disc ?? 0) - (b.disc ?? 0) ||
@@ -942,10 +954,14 @@ function renderDevices() {
     ? '<button class="dev-btn busy" disabled>スキャン中</button>'
     : `<button class="dev-btn" data-rescan="${id}" title="${esc(title)}">再スキャン</button>`;
 
+  // 非活性ソース: 名前をダブルクリックで表示のオン/オフを切り替えられる
+  const dis = (id) => state.disabledSources.has(id);
+  const nameTitle = 'ダブルクリックで表示のオン/オフ';
+
   // 固定フォルダソース (メインライブラリと --source 指定分) を先頭に置く。
   // メインライブラリの再スキャンはここから行う
   const fixedRows = sources.filter((s) => !s.removable).map((s) => `
-    <div class="dev-row" title="${esc(s.dir)}">
+    <div class="dev-row${dis(s.id) ? ' dis' : ''}" data-srcid="${s.id}" data-srclabel="${esc(s.label)}" title="${esc(s.dir)} — ${nameTitle}">
       <div class="dev-name">📁 ${esc(s.label)}</div>
       <div class="dev-actions"><span class="dev-count">${s.tracks} 曲</span>
       ${rescanBtn(s.id, 'このフォルダを読み直す (追加・変更したファイルを取り込む)')}</div></div>`).join('');
@@ -967,7 +983,8 @@ function renderDevices() {
       actions = `<button class="dev-btn" data-scan="${esc(d.path)}">スキャン</button>`;
     }
     const icon = d.kind === 'network' ? '🗄' : '💾'; // NAS はラック、SD/USB はカード風
-    return `<div class="dev-row" title="${esc(d.path)}">
+    const toggleAttr = src ? ` data-srcid="${src.id}" data-srclabel="${esc(d.label)}"` : '';
+    return `<div class="dev-row${src && dis(src.id) ? ' dis' : ''}"${toggleAttr} title="${esc(d.path)}${src ? ' — ' + nameTitle : ''}">
       <div class="dev-name">${icon} ${esc(d.label)}</div>
       <div class="dev-actions"><span class="dev-count">${count}</span>${actions}</div></div>`;
   }).join('');
@@ -982,7 +999,7 @@ function renderDevices() {
     const countText = s.tracks ? `${s.tracks} 曲`
       : mounted ? (state.scanning ? 'スキャン中…' : '0 曲')
       : '未接続';
-    return `<div class="dev-row" title="${esc(s.dir)}">
+    return `<div class="dev-row${dis(s.id) ? ' dis' : ''}" data-srcid="${s.id}" data-srclabel="${esc(s.label)}" title="${esc(s.dir)} — ${nameTitle}">
       <div class="dev-name">💾 ${esc(s.label)}</div>
       <div class="dev-actions"><span class="dev-count">${countText}</span>
       <span class="pin-badge">固定中</span>${mounted ? rescanBtn(s.id, 'この場所だけ読み直す') : ''}</div></div>`;
@@ -1025,6 +1042,27 @@ function renderDevices() {
     deviceOpBusy = false;
     refreshDevices();
   }));
+  // ソース名のダブルクリックで表示のオン/オフを切り替え (このブラウザに保存)
+  el.querySelectorAll('.dev-row[data-srcid]').forEach((row) => {
+    row.querySelector('.dev-name').addEventListener('dblclick', () => {
+      const id = row.dataset.srcid;
+      const label = row.dataset.srclabel;
+      if (state.disabledSources.has(id)) {
+        state.disabledSources.delete(id);
+        toast(`${label} を表示に戻しました`);
+      } else {
+        state.disabledSources.add(id);
+        toast(`${label} を非表示にしました (もう一度ダブルクリックで戻ります)`);
+      }
+      try {
+        localStorage.setItem('macca-disabled-sources', JSON.stringify([...state.disabledSources]));
+      } catch { /* 保存できなくてもセッション中は有効 */ }
+      renderDevices();
+      renderFormatChips();
+      renderStats();
+      render();
+    });
+  });
   el.querySelectorAll('[data-rescan]').forEach((b) => b.addEventListener('click', async () => {
     deviceOpBusy = true;
     b.disabled = true;

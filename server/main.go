@@ -385,7 +385,25 @@ func newState(opts options) (*appState, error) {
 		state.startScanJob(opts.cache, deferred)
 	}
 	go state.keepRemovableAwake()
+	go state.trimMemoryPeriodically()
 	return state, nil
+}
+
+// trimMemoryPeriodically はアイドル時にヒープを OS へ返し、RSS を実データ相当に
+// 保つ。ライブラリ JSON の組み立てやアートワーク配信で育ったピーク分は、
+// これがないとスキャンを走らせるまで OS に返らない。
+// (ヒープ数十 MB の GC は数 ms なので 2 分間隔の負荷は無視できる)
+func (s *appState) trimMemoryPeriodically() {
+	ticker := time.NewTicker(2 * time.Minute)
+	defer ticker.Stop()
+	for range ticker.C {
+		s.mu.RLock()
+		scanning := s.scanning
+		s.mu.RUnlock()
+		if !scanning {
+			runtimedebug.FreeOSMemory()
+		}
+	}
 }
 
 // リムーバブルソース (SD カード等) を使用中はスリープさせない。

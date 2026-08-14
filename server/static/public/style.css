@@ -470,7 +470,6 @@ td.fmt { width: 60px; }
   border-top: 1px solid var(--border);
   flex-shrink: 0;
 }
-#player.hidden { display: none; }
 
 .np { display: flex; align-items: center; gap: 12px; min-width: 0; }
 #np-art, #np-art-placeholder {

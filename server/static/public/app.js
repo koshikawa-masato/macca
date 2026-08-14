@@ -477,7 +477,6 @@ function nextQueueIdx() {
 }
 
 function updateNowPlayingUI(t) {
-  $('#player').classList.remove('hidden');
   $('#np-title').textContent = t.title;
   $('#np-artist').textContent = [t.artist, t.album].filter(Boolean).join(' — ');
 

@@ -7,7 +7,7 @@ const state = {
   sources: [],
   ffmpeg: false,
   dir: '',
-  view: 'songs',          // songs | albums | artists
+  view: 'albums',         // songs | albums | artists (既定はアルバムの棚)
   search: '',
   filterArtist: null,
   filterAlbum: null,      // アルバムキー
@@ -263,7 +263,10 @@ function renderAlbums(container) {
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(t);
   }
-  const albums = [...groups.entries()].sort((a, b) => collator.compare(a[0], b[0]));
+  // タグなしの寄せ集め「(不明なアルバム)」は棚の先頭ではなく最後に置く
+  const unknown = (key) => key.startsWith('(不明なアルバム)') ? 1 : 0;
+  const albums = [...groups.entries()].sort((a, b) =>
+    unknown(a[0]) - unknown(b[0]) || collator.compare(a[0], b[0]));
 
   const cards = albums.map(([key, ts]) => {
     const [name, artist] = key.split('\x1f');
@@ -329,6 +332,12 @@ function setView(view) {
   render();
   $('#content').scrollTop = 0;
 }
+
+// ブラウザの戻る/進むや URL 直打ちでもビューを切り替えられるようにする
+window.addEventListener('hashchange', () => {
+  const v = location.hash.replace('#', '');
+  if (['songs', 'albums', 'artists'].includes(v) && v !== state.view) setView(v);
+});
 
 // ---- フォーマットフィルタ / 統計 ------------------------------------------
 
@@ -1114,7 +1123,7 @@ function applyLibrary(data) {
   try {
     const res = await fetch('/api/library');
     applyLibrary(await res.json());
-    if (state.view !== 'songs') setView(state.view);
+    setView(state.view);
   } catch {
     $('#content').innerHTML = '<div class="loading">ライブラリの読み込みに失敗しました。サーバが起動しているか確認してください。</div>';
   }

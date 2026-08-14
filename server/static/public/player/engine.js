@@ -10,14 +10,15 @@
 import { demuxMp4 } from './demux-mp4.js';
 import { decodeAiff } from './decode-aiff.js';
 import { probeSampleRate } from './probe.js';
-import { computeTrackGain } from './loudness.js';
+import { computeTrackGain, createLoudnessAnalyzer } from './loudness.js';
 import { loadAlac, decodeAlacTrack } from './alac.js';
 import { createStreamReader, createProgressiveSource } from './stream.js';
 
 const ENGINE_EXTS = new Set([
   '.mp3', '.aac', '.m4a', '.m4b', '.flac', '.wav', '.aif', '.aiff', '.aifc',
 ]);
-const GAIN_CACHE_KEY = 'macca-track-gains';
+// v2: BS.1770 (K 特性) 計測に変更したため、旧 RMS 計測の値は引き継がない
+const GAIN_CACHE_KEY = 'macca-track-gains-v2';
 const GAIN_CACHE_MAX = 5000;
 
 // ストリーミング再生: 一度にデコードする窓と先行デコード量 (秒)。
@@ -163,6 +164,7 @@ export class AudioEngine {
       // スケジュール済みセグメントを破棄し、シーク位置から窓読みをやり直す
       for (const seg of cur.segments) this._cancelSource(seg.source);
       cur.segments = [];
+      cur.analyzer = null; // 途中を飛ばすと全曲解析にならないので確定を諦める
       clearTimeout(cur.pumpTimer);
       cur.epoch++;
       cur.startTime = now - offset;
@@ -296,11 +298,22 @@ export class AudioEngine {
   }
 
   /** デコード済みの窓からゲインを実測してキャッシュする */
-  _gainFromWindow(track, channelData, sampleRate) {
-    const g = Math.round(computeTrackGain(channelData, sampleRate) * 1000) / 1000;
+  /** ここまでの解析結果からゲインを求めて記録する (逐次解析の途中経過/確定値) */
+  _gainFromAnalyzer(track, analyzer) {
+    const g = Math.round((analyzer?.gain() ?? 1) * 1000) / 1000;
     this._loadGains()[track.id] = g;
     this._scheduleGainsSave();
     return g;
+  }
+
+  /**
+   * ストリーム再生が曲末まで解析し終えたら、全曲分の統合ラウドネスで
+   * 保存値を確定する (次回以降の再生が正確になる。再生中の音量は変えない)
+   */
+  _finalizeLoudness(cur) {
+    if (!cur.analyzer || cur.analyzerDone) return;
+    cur.analyzerDone = true;
+    this._gainFromAnalyzer(cur.track, cur.analyzer);
   }
 
   /** 取得中ソース (またはバイト列) からデコードする */
@@ -469,11 +482,21 @@ export class AudioEngine {
       endTimer: null,
       buffer: null,
       source: null,
+      // 曲全体のラウドネスを再生しながら逐次計測する (BS.1770)。
+      // 曲末まで測れたら保存値を確定し、次回以降の再生が正確になる
+      analyzer: offset === 0 ? createLoudnessAnalyzer(reader.sampleRate) : null,
+      analyzerDone: false,
     };
     // ギャップレス連結で先頭セグメントがスケジュール済みならそのまま引き継ぐ
     if (entry.source && entry.firstBuffer) {
       cur.segments.push({ source: entry.source, startSample: 0, length: entry.firstBuffer.length });
       cur.nextSample = entry.firstBuffer.length;
+      if (cur.analyzer) {
+        const fb = entry.firstBuffer;
+        const chs = [];
+        for (let c = 0; c < fb.numberOfChannels; c++) chs.push(fb.getChannelData(c));
+        cur.analyzer.push(chs, fb.length);
+      }
     }
     this.current = cur;
     this._armEndWatchdog(cur, this._gen);
@@ -496,6 +519,7 @@ export class AudioEngine {
       for (let guard = 0; guard < 32 && gen === this._gen && this.current === cur && epoch === cur.epoch; guard++) {
         this.stats.pumpLoop++;
         if (cur.nextSample >= cur.reader.totalSamples) {
+          this._finalizeLoudness(cur); // 曲全体を解析し終えた: 確定値を保存
           this._armStreamEnd(cur, gen);
           return;
         }
@@ -505,12 +529,15 @@ export class AudioEngine {
         if (gen !== this._gen || this.current !== cur || epoch !== cur.epoch) return;
         if (!win.length) { // これ以上読めない: ここを終端として扱う
           cur.duration = cur.nextSample / rate;
+          this._finalizeLoudness(cur);
           this._armStreamEnd(cur, gen);
           return;
         }
+        cur.analyzer?.push(win.channelData, win.length);
         if (cur.trackGain == null) {
-          // ゲイン未実測なら最初の窓から求める (音が出る前に設定される)
-          cur.trackGain = this._gainFromWindow(cur.track, win.channelData, rate);
+          // ゲイン未実測ならここまでの解析から求める (音が出る前に設定される)。
+          // 曲末まで解析できたら確定値で保存し直す (次回再生から反映)
+          cur.trackGain = this._gainFromAnalyzer(cur.track, cur.analyzer);
           cur.gainNode.gain.value = this.normalization ? cur.trackGain : 1;
         }
         const buf = channelsToBuffer(win.channelData, win.length, rate);
@@ -687,7 +714,10 @@ export class AudioEngine {
             Math.min(entry.reader.totalSamples, Math.floor(STREAM_WINDOW_SEC * rate)));
           if (win.length > 0) {
             if (entry.trackGain == null) {
-              entry.trackGain = this._gainFromWindow(next.track, win.channelData, rate);
+              // 先頭窓からの暫定値。再生開始後に全曲解析が走り、曲末で確定される
+              const est = createLoudnessAnalyzer(rate);
+              est.push(win.channelData, win.length);
+              entry.trackGain = this._gainFromAnalyzer(next.track, est);
             }
             entry.firstBuffer = channelsToBuffer(win.channelData, win.length, rate);
           }

@@ -82,25 +82,46 @@ test('ALAC: wasm デコーダが波形をロスレスに復元する', async () 
   assert.ok(maxErr < 1e-4, `ロスレス復元 (maxErr=${maxErr})`);
 });
 
-test('loudness: RMS ベースの正規化ゲインを計算する', () => {
+test('loudness: BS.1770 (K 特性 + ゲート) の正規化ゲインを計算する', async () => {
+  const { createLoudnessAnalyzer } = await import('../server/static/public/player/loudness.js');
   const rate = 44100;
-  const loud = new Float32Array(rate * 2);
-  for (let i = 0; i < loud.length; i++) loud[i] = Math.sin(2 * Math.PI * 440 * i / rate) * 0.5;
-  // 振幅 0.5 のサイン波: パワー = 0.125 (-9dB) → 目標 -18dB へ約 -9dB (×0.35)
-  const g1 = computeTrackGain([loud], rate);
-  assert.ok(g1 > 0.3 && g1 < 0.4, `大音量は下げる (gain=${g1})`);
+  const sine = (amp, sec) => {
+    const a = new Float32Array(Math.round(rate * sec));
+    for (let i = 0; i < a.length; i++) a[i] = Math.sin(2 * Math.PI * 997 * i / rate) * amp;
+    return a;
+  };
 
-  const quiet = new Float32Array(rate * 2);
-  for (let i = 0; i < quiet.length; i++) quiet[i] = Math.sin(2 * Math.PI * 440 * i / rate) * 0.01;
-  // -43dB → +12dB 上限でブースト (×3.98)
-  const g2 = computeTrackGain([quiet], rate);
-  assert.ok(g2 > 3.5 && g2 < 4.2, `小音量は上限まで上げる (gain=${g2})`);
+  // 振幅 0.5 の 997Hz サイン波: K 特性込みで LUFS ≈ -9.1 → 目標 -18 へ約 ×0.358
+  const g1 = computeTrackGain([sine(0.5, 2)], rate);
+  assert.ok(g1 > 0.34 && g1 < 0.38, `大音量は下げる (gain=${g1})`);
 
-  // クリップ防止: ほぼフルスケールの静かな曲もどきはピークで頭打ち
-  const spiky = new Float32Array(rate);
+  // 振幅 0.01: LUFS ≈ -43.1 → 約 ×17.9 (クリップしない範囲なら上限なし = ReplayGain 同等)
+  const g2 = computeTrackGain([sine(0.01, 2)], rate);
+  assert.ok(g2 > 16.5 && g2 < 19.5, `小音量はクリップしない範囲で目標まで上げる (gain=${g2})`);
+
+  // ゲーティング: 長い無音は平均に入れない (無音混じりでも同じゲインになる)
+  const withSilence = new Float32Array(rate * 6);
+  withSilence.set(sine(0.5, 2), 0); // 残り 4 秒は無音
+  const g3 = computeTrackGain([withSilence], rate);
+  assert.ok(Math.abs(g3 - g1) < 0.02, `無音はゲートで除外 (gain=${g3} vs ${g1})`);
+
+  // 逐次解析 (ストリーミングの窓ごと push) と一括計測が一致する
+  const whole = sine(0.5, 3);
+  const inc = createLoudnessAnalyzer(rate);
+  for (let p = 0; p < whole.length; p += 4096) {
+    const chunk = whole.subarray(p, Math.min(p + 4096, whole.length));
+    inc.push([chunk], chunk.length);
+  }
+  const once = createLoudnessAnalyzer(rate);
+  once.push([whole]);
+  assert.ok(Math.abs(inc.integratedLufs() - once.integratedLufs()) < 1e-6,
+    '逐次解析 = 一括計測');
+
+  // クリップ防止: ピーク × ゲインが 1.0 を超えない
+  const spiky = sine(0.02, 2);
   spiky[100] = 0.98;
-  const g3 = computeTrackGain([spiky], rate);
-  assert.ok(spiky[100] * g3 <= 0.99 + 1e-6, `ピーククリップ防止 (gain=${g3})`);
+  const g4 = computeTrackGain([spiky], rate);
+  assert.ok(0.98 * g4 <= 0.99, `ピーククリップ防止 (gain=${g4})`);
 
   assert.equal(computeTrackGain([new Float32Array(rate)], rate), 1, '無音は等倍');
 });

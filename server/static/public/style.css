@@ -217,16 +217,16 @@ body {
   flex-shrink: 0;
   border: 1px solid var(--border);
   background: transparent;
+  color: var(--fg-dim); /* 単色グリフにして UI の文字色に従わせる (暗色絵文字は沈む) */
   font-size: 14px;
   line-height: 1;
   padding: 6px 9px;
   border-radius: 8px;
   cursor: pointer;
-  filter: grayscale(1) opacity(0.6);
 }
-#debug-btn:hover { border-color: var(--fg-dim); filter: grayscale(0.3); }
+#debug-btn:hover { color: var(--accent); border-color: var(--fg-dim); }
 #debug-btn.on {
-  filter: none;
+  color: var(--accent);
   border-color: var(--accent);
   background: var(--bg3);
 }

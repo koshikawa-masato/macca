@@ -2189,6 +2189,39 @@ func (s *appState) servePresence(w http.ResponseWriter, r *http.Request) {
 
 func (s *appState) serveDevices(w http.ResponseWriter) {
 	devices := listDevices()
+
+	// 取り外し (ホットスワップ) の後片付け: 実体が消えたリムーバブルソースは
+	// ライブラリから外す。固定ソースは記録を残して曲だけ空にする
+	s.mu.RLock()
+	removable := make([]*source, 0, len(s.sources))
+	for _, src := range s.sources {
+		if src.Removable {
+			removable = append(removable, src)
+		}
+	}
+	s.mu.RUnlock()
+	changed := false
+	for _, src := range removable {
+		if _, err := os.Stat(src.Dir); err == nil {
+			continue // まだ生きている
+		}
+		s.mu.Lock()
+		if src.Pinned {
+			if len(src.Tracks) > 0 {
+				src.Tracks = nil
+				src.Errors = nil
+				changed = true
+			}
+		} else {
+			delete(s.sources, src.ID)
+			changed = true
+		}
+		s.mu.Unlock()
+	}
+	if changed {
+		s.rebuildIndex()
+	}
+
 	type outDevice struct {
 		ID      string `json:"id"`
 		Path    string `json:"path"`

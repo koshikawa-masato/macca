@@ -387,6 +387,27 @@ async function serveDevices(res) {
   } catch {
     // 検出失敗は「デバイスなし」として扱う
   }
+  // 取り外し (ホットスワップ) の後片付け: 実体が消えたリムーバブルソースは
+  // ライブラリから外す。固定ソースは記録を残して曲だけ空にする
+  let changed = false;
+  for (const src of [...state.sources.values()]) {
+    if (!src.removable) continue;
+    try {
+      await stat(src.dir);
+      continue; // まだ生きている
+    } catch { /* 消えた */ }
+    if (src.pinned) {
+      if (src.tracks.length > 0) {
+        src.tracks = [];
+        src.errors = [];
+        changed = true;
+      }
+    } else {
+      state.sources.delete(src.id);
+      changed = true;
+    }
+  }
+  if (changed) rebuildIndex();
   sendJson(res, 200, {
     devices: volumes.map((v) => ({
       id: sourceId(v.path),

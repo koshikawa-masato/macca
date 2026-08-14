@@ -884,6 +884,7 @@ let deviceOpBusy = false; // スキャン・固定などの操作中は定期再
 
 async function refreshDevices() {
   if (deviceOpBusy) return;
+  const prevIds = devices.map((d) => d.id);
   try {
     const res = await fetch('/api/devices');
     devices = (await res.json()).devices ?? [];
@@ -891,6 +892,17 @@ async function refreshDevices() {
     devices = [];
   }
   if (deviceOpBusy) return;
+  // 取り外し検知: デバイスが消えたらライブラリを取り直して曲リストから消す
+  // (サーバ側が /api/devices の応答時に消えたソースを片付けている)
+  if (prevIds.some((id) => !devices.some((d) => d.id === id))) {
+    try {
+      const res = await fetch('/api/library');
+      const json = await res.json();
+      const playingGone = state.playing && json.tracks.every((t) => t.id !== state.playing.id);
+      applyLibrary(json);
+      if (playingGone) toast('ソースの接続が解除されました');
+    } catch { /* 次の周期で再試行 */ }
+  }
   renderDevices();
 }
 

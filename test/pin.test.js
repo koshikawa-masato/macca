@@ -224,6 +224,30 @@ test('サブフォルダ固定: デバイス外のパスと実在しないフォ
   assert.equal(missing.status, 400);
 });
 
+test('取り外し検知: デバイスの実体が消えたら曲がライブラリから消える', async () => {
+  // 固定ソースとして追加してスキャン完了を待つ
+  const { status } = await postJson(`${base}/api/source`, { path: devDir, pin: true });
+  assert.equal(status, 200);
+  await waitForScan((l) => l.sources.find((s) => s.dir === devDir)?.tracks > 0);
+
+  // デバイスの実体を消す (抜いた状態を再現)
+  await rm(devDir, { recursive: true, force: true });
+  await fetch(`${base}/api/devices`); // ポーリング相当 (ここで後片付けされる)
+  const lib = await (await fetch(`${base}/api/library`)).json();
+  const src = lib.sources.find((s) => s.dir === devDir);
+  assert.ok(src, '固定ソースの記録は残る');
+  assert.equal(src.tracks, 0, '曲は空になる');
+  assert.ok(!lib.tracks.some((t) => t.src === src.id), 'ライブラリから曲が消えている');
+
+  // 後続テストのためにデバイスを復元
+  await mkdir(devDir, { recursive: true });
+  await writeFile(path.join(devDir, 'sd.wav'),
+    buildWav({ title: 'SDの曲', artist: 'B', album: 'Y' }));
+  const res = await fetch(`${base}/api/source/${src.id}/rescan`, { method: 'POST' });
+  assert.equal(res.status, 200);
+  await waitForScan((l) => l.sources.find((s) => s.dir === devDir)?.tracks > 0);
+});
+
 test('ソース単体の再スキャン: 追加ファイルが反映される', async () => {
   // 固定ソースとして追加し直し、初回スキャンの完了を待つ
   const { status, json } = await postJson(`${base}/api/source`, { path: devDir, pin: true });

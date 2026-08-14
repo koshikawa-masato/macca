@@ -80,8 +80,70 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
   }
 
+  // AppleScript でブラウザ内の macca タブを探してアクティブにする。
+  // Chrome 系 (Chrome/Edge/Brave/Vivaldi/Chromium) と Safari に対応。
+  // 初回は macOS の「制御を許可しますか」確認が出る (拒否されたら前面化のみ)
+  func focusExistingTab(_ u: URL) -> Bool {
+    guard let appURL = NSWorkspace.shared.urlForApplication(toOpen: u),
+          let bundleID = Bundle(url: appURL)?.bundleIdentifier else { return false }
+    let port = u.port.map(String.init) ?? "80"
+    let h1 = "127.0.0.1:" + port
+    let h2 = "localhost:" + port
+    let idLower = bundleID.lowercased()
+    let chromium = ["com.google.chrome", "com.microsoft.edgemac", "com.brave.browser",
+                    "com.vivaldi.vivaldi", "org.chromium.chromium"]
+    let script: String
+    if idLower == "com.apple.safari" {
+      script = """
+      tell application id "\(bundleID)"
+        activate
+        repeat with w in windows
+          repeat with t in tabs of w
+            if (URL of t contains "\(h1)") or (URL of t contains "\(h2)") then
+              set current tab of w to t
+              set index of w to 1
+              return "ok"
+            end if
+          end repeat
+        end repeat
+      end tell
+      return "no"
+      """
+    } else if chromium.contains(where: { idLower.hasPrefix($0) }) {
+      script = """
+      tell application id "\(bundleID)"
+        activate
+        repeat with w in windows
+          set i to 1
+          repeat with t in tabs of w
+            if (URL of t contains "\(h1)") or (URL of t contains "\(h2)") then
+              set active tab index of w to i
+              set index of w to 1
+              return "ok"
+            end if
+            set i to i + 1
+          end repeat
+        end repeat
+      end tell
+      return "no"
+      """
+    } else {
+      return false // AppleScript 対応外のブラウザ (Firefox 等)
+    }
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+    p.arguments = ["-e", script]
+    let pipe = Pipe()
+    p.standardOutput = pipe
+    p.standardError = FileHandle.nullDevice
+    do { try p.run() } catch { return false }
+    p.waitUntilExit()
+    let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    return out.contains("ok")
+  }
+
   // 起動中に Dock アイコンをクリックしたとき:
-  //  - ページが既に開いている → ブラウザを前面に出すだけ (重複タブを作らない)
+  //  - ページが既に開いている → その「タブ」をアクティブにする (重複タブを作らない)
   //  - ページが閉じられている → macca のページを開き直す
   // 複数起動したい場合は Finder から macca.app をもう一度開く (ポート自動ずらし)
   func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
@@ -94,13 +156,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
          let c = obj["clients"] as? Int {
         clients = c
       }
-      DispatchQueue.main.async {
-        if clients > 0, let appURL = NSWorkspace.shared.urlForApplication(toOpen: u) {
-          // 既定ブラウザを前面に出す (タブは増やさない)
-          NSWorkspace.shared.openApplication(at: appURL, configuration: NSWorkspace.OpenConfiguration())
-        } else {
-          NSWorkspace.shared.open(u)
+      if clients > 0 {
+        // タブのフォーカスまで試み、できないブラウザではアプリ前面化のみ
+        if self.focusExistingTab(u) { return }
+        DispatchQueue.main.async {
+          if let appURL = NSWorkspace.shared.urlForApplication(toOpen: u) {
+            NSWorkspace.shared.openApplication(at: appURL, configuration: NSWorkspace.OpenConfiguration())
+          }
         }
+      } else {
+        DispatchQueue.main.async { NSWorkspace.shared.open(u) }
       }
     }
     task.resume()

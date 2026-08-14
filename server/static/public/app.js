@@ -1059,7 +1059,14 @@ function applyLibrary(data) {
   renderDevices();
   if ($('#settings-dialog').open) renderPinnedList();
   render();
-  if (data.errors > 0) toast(`${data.errors} 件のファイルが読み取れませんでした`);
+  // 読み取りエラーは「どのソースで何件か」を、件数が変わったときだけ知らせる
+  // (毎回ライブラリ全体の累計を出すと、無関係なソースのスキャンでも出て紛らわしい)
+  if (data.errors > 0 && data.errors !== state.lastErrorCount) {
+    const detail = (data.sources ?? []).filter((s) => s.errors > 0)
+      .map((s) => `${s.label} ${s.errors} 件`).join('、');
+    toast(`読み取れないファイル: ${detail}`);
+  }
+  state.lastErrorCount = data.errors;
 }
 
 (async function init() {

@@ -192,10 +192,16 @@ body {
   user-select: none; /* ダブルクリック切替で文字選択させない */
   cursor: default;
 }
-/* 非活性ソース: 曲一覧・集計から外れている状態 */
+/* 非活性ソース: 曲一覧・集計から外れている状態。
+   操作ボタンも押せなくする (名前のダブルクリックで戻すのだけ有効) */
 .dev-row.dis .dev-name,
 .dev-row.dis .dev-count { opacity: 0.4; }
 .dev-row.dis .dev-name { text-decoration: line-through; }
+.dev-row.dis .dev-btn,
+.dev-row.dis .pin-badge {
+  opacity: 0.3;
+  pointer-events: none;
+}
 .dev-actions {
   display: flex;
   align-items: center;

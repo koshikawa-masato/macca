@@ -679,6 +679,39 @@ function togglePlay() {
 
 function updatePlayButton() {
   $('#btn-play').textContent = state.loading ? '…' : isPaused() ? '▶' : '⏸';
+  syncMediaAnchor();
+}
+
+// エンジン再生 (Web Audio) は <audio> 要素を使わないため、そのままでは Chrome が
+// タブを「メディア再生中」と認識せず、OS のメディアキー (Mac の F7/F8/F9 等) が
+// 届かない。無音の <audio> ループを錨として一緒に再生し、MediaSession を有効化する
+const mediaAnchor = (() => {
+  if (typeof Audio === 'undefined') return null;
+  const rate = 8000;
+  const n = rate * 10; // 10 秒の無音 (ループ)
+  const buf = new ArrayBuffer(44 + n * 2);
+  const v = new DataView(buf);
+  const put = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+  put(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); put(8, 'WAVEfmt ');
+  v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true);
+  v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  put(36, 'data'); v.setUint32(40, n * 2, true);
+  const a = new Audio(URL.createObjectURL(new Blob([buf], { type: 'audio/wav' })));
+  a.loop = true;
+  a.volume = 0.001; // muted 扱いにならないようゼロにはしない (サンプル自体が無音)
+  return a;
+})();
+
+function syncMediaAnchor() {
+  const playing = Boolean(state.playing) && !state.loading && !isPaused();
+  if (mediaAnchor) {
+    if (playing && state.mode === 'engine') mediaAnchor.play().catch(() => {});
+    else mediaAnchor.pause();
+  }
+  if ('mediaSession' in navigator) {
+    navigator.mediaSession.playbackState = playing ? 'playing' : (state.playing ? 'paused' : 'none');
+  }
 }
 
 function updateMediaSession(t) {

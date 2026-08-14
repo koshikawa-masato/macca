@@ -2127,9 +2127,14 @@ func (s *appState) serveStats(w http.ResponseWriter) {
 	s.statsCPU = cpu
 	s.statsAt = now
 	s.statsMu.Unlock()
+	s.presenceMu.Lock()
+	clients := s.presenceCount
+	s.presenceMu.Unlock()
+	// clients: 開いているページ数 (ランチャーが Dock 再クリック時の挙動判定に使う)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"rss": processRSS(),
-		"cpu": percent,
+		"rss":     processRSS(),
+		"cpu":     percent,
+		"clients": clients,
 	})
 }
 

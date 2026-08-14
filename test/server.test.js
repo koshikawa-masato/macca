@@ -105,6 +105,7 @@ test('GET /api/stats がメモリ・CPU情報を返す', async () => {
   const json = await res.json();
   assert.ok(typeof json.rss === 'number' && json.rss > 0, 'rss はバイト数');
   assert.ok(typeof json.cpu === 'number', 'cpu は数値 (未対応環境は -1)');
+  assert.ok(typeof json.clients === 'number', 'clients は開いているページ数');
 });
 
 test('存在しない ID は 404', async () => {

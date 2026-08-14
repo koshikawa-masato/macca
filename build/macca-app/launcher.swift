@@ -80,11 +80,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
   }
 
-  // 起動中に Dock アイコンをクリック → macca のページを開き直す
+  // 起動中に Dock アイコンをクリックしたとき:
+  //  - ページが既に開いている → ブラウザを前面に出すだけ (重複タブを作らない)
+  //  - ページが閉じられている → macca のページを開き直す
+  // 複数起動したい場合は Finder から macca.app をもう一度開く (ポート自動ずらし)
   func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
-    if let u = URL(string: url) {
-      NSWorkspace.shared.open(u)
+    guard let u = URL(string: url) else { return false }
+    let statsURL = u.appendingPathComponent("api/stats")
+    let task = URLSession.shared.dataTask(with: statsURL) { data, _, _ in
+      var clients = 0
+      if let data,
+         let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+         let c = obj["clients"] as? Int {
+        clients = c
+      }
+      DispatchQueue.main.async {
+        if clients > 0, let appURL = NSWorkspace.shared.urlForApplication(toOpen: u) {
+          // 既定ブラウザを前面に出す (タブは増やさない)
+          NSWorkspace.shared.openApplication(at: appURL, configuration: NSWorkspace.OpenConfiguration())
+        } else {
+          NSWorkspace.shared.open(u)
+        }
+      }
     }
+    task.resume()
     return false
   }
 

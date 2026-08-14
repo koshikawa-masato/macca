@@ -375,7 +375,8 @@ function serveStats(res) {
   }
   statsState.lastCpu = cpu;
   statsState.lastAt = now;
-  sendJson(res, 200, { rss: process.memoryUsage().rss, cpu: percent });
+  // clients: 開いているページ数 (ランチャーが Dock 再クリック時の挙動判定に使う)
+  sendJson(res, 200, { rss: process.memoryUsage().rss, cpu: percent, clients: presence.clients });
 }
 
 // ---- デバイス (リムーバブルストレージ) -------------------------------------

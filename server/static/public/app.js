@@ -132,13 +132,25 @@ function visibleTracks() {
   if (state.sortKey) {
     const k = state.sortKey;
     const dir = state.sortAsc ? 1 : -1;
-    list = [...list].sort((a, b) => {
-      const va = a[k], vb = b[k];
+    const cmp = (va, vb) => {
       if (va == null && vb == null) return 0;
       if (va == null) return 1;
       if (vb == null) return -1;
       if (typeof va === 'number') return (va - vb) * dir;
       return collator.compare(String(va), String(vb)) * dir;
+    };
+    list = [...list].sort((a, b) => {
+      // トラック番号 (#) はディスクごとに 1 から数え直すので、
+      // 複数枚組では同じアルバム → ディスク → トラックの順で比較する
+      // (単純比較だと各ディスクの 1 曲目が全部並んでしまう)
+      if (k === 'track') {
+        return cmp(a.album, b.album) || cmp(a.disc ?? 0, b.disc ?? 0) || cmp(a.track, b.track);
+      }
+      // アルバムでソートしたときも中身はディスク → トラック順に揃える
+      if (k === 'album') {
+        return cmp(a.album, b.album) || cmp(a.disc ?? 0, b.disc ?? 0) || cmp(a.track, b.track);
+      }
+      return cmp(a[k], b[k]);
     });
   } else if (state.filterAlbum !== null) {
     list = [...list].sort((a, b) =>

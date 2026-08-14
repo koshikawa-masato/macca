@@ -2231,6 +2231,7 @@ func (s *appState) serveDevices(w http.ResponseWriter) {
 		ID      string `json:"id"`
 		Path    string `json:"path"`
 		Label   string `json:"label"`
+		Kind    string `json:"kind"`
 		Scanned bool   `json:"scanned"`
 	}
 	out := make([]outDevice, 0, len(devices))
@@ -2238,7 +2239,11 @@ func (s *appState) serveDevices(w http.ResponseWriter) {
 	defer s.mu.RUnlock()
 	for _, d := range devices {
 		id := sourceID(d.Path)
-		out = append(out, outDevice{ID: id, Path: d.Path, Label: d.Label, Scanned: s.sources[id] != nil})
+		kind := d.Kind
+		if kind == "" {
+			kind = "removable"
+		}
+		out = append(out, outDevice{ID: id, Path: d.Path, Label: d.Label, Kind: kind, Scanned: s.sources[id] != nil})
 	}
 	// scannedAt はライブラリ世代。フロントはこれの変化で「取り外し等で
 	// ライブラリが変わった」ことを知り、各ビューの表示を取り直す
@@ -2248,6 +2253,7 @@ func (s *appState) serveDevices(w http.ResponseWriter) {
 type device struct {
 	Path  string `json:"path"`
 	Label string `json:"label"`
+	Kind  string `json:"kind,omitempty"` // network (NAS 等) | removable (SD/USB 等)
 }
 
 func listDevices() []device {
@@ -2269,7 +2275,7 @@ func listDevices() []device {
 			if real, err := filepath.EvalSymlinks(p); err == nil && real == "/" {
 				continue
 			}
-			out = append(out, device{Path: p, Label: e.Name()})
+			out = append(out, device{Path: p, Label: e.Name(), Kind: mountKind(p)})
 		}
 	case "windows":
 		for ch := 'D'; ch <= 'Z'; ch++ {

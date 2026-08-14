@@ -947,8 +947,9 @@ function renderDevices() {
       // 固定は ⚙ フォルダ設定から行う。ここは今回だけのスキャンのみ
       actions = `<button class="dev-btn" data-scan="${esc(d.path)}">スキャン</button>`;
     }
+    const icon = d.kind === 'network' ? '🗄' : '💾'; // NAS はラック、SD/USB はカード風
     return `<div class="dev-row" title="${esc(d.path)}">
-      <div class="dev-name">💾 ${esc(d.label)}</div>
+      <div class="dev-name">${icon} ${esc(d.label)}</div>
       <div class="dev-actions"><span class="dev-count">${count}</span>${actions}</div></div>`;
   }).join('');
 

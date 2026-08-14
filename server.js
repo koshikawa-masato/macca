@@ -414,6 +414,7 @@ async function serveDevices(res) {
       id: sourceId(v.path),
       path: v.path,
       label: v.label,
+      kind: v.kind ?? 'removable', // network (NAS 等) | removable (SD/USB 等)
       scanned: state.sources.has(sourceId(v.path)),
     })),
     // ライブラリ世代。フロントはこれの変化で「取り外し等でライブラリが

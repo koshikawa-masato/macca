@@ -361,14 +361,19 @@ function renderStats() {
 // ---- 再生 -----------------------------------------------------------------
 
 function playFromList(id) {
-  const t = visibleTracks().find((x) => x.id === id);
+  const visible = visibleTracks();
+  const t = visible.find((x) => x.id === id);
   if (!t) return;
-  // 再生キューはクリックした曲のアルバム全体 (ディスク順 → トラック番号順)
+  // 再生キューはクリックした曲のアルバム全体。並びは「いま見えている順」に
+  // 従う (# を降順にしていれば 19 → 18 → … と再生する)。ソートや検索で
+  // アルバムの一部しか見えていない場合は、既定のディスク順 → トラック順
   const key = albumKey(t);
-  const album = state.tracks
-    .filter((x) => albumKey(x) === key)
-    .sort((a, b) => (a.disc ?? 0) - (b.disc ?? 0) ||
-      (a.track ?? 9999) - (b.track ?? 9999) || collator.compare(a.title, b.title));
+  const inView = visible.filter((x) => albumKey(x) === key);
+  const whole = state.tracks.filter((x) => albumKey(x) === key);
+  const album = inView.length === whole.length
+    ? inView
+    : whole.sort((a, b) => (a.disc ?? 0) - (b.disc ?? 0) ||
+        (a.track ?? 9999) - (b.track ?? 9999) || collator.compare(a.title, b.title));
   state.queue = album;
   state.queueIdx = album.indexOf(t);
   state.shuffleBag = [];

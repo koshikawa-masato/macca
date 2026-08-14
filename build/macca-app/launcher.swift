@@ -148,11 +148,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   //  - ページが既に開いている → その「タブ」をアクティブにする (重複タブを作らない)
   //  - ページが閉じられている → macca のページを開き直す
   // 複数起動したい場合は Finder から macca.app をもう一度開く (ポート自動ずらし)
-  func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
-    // Dock クリックでランチャー自身が最前面化するとブラウザのフォーカスが
-    // 一瞬外れてチカチカする。即座に直前のアプリへフォーカスを返し、
-    // ブラウザが最前面のままタブだけが切り替わるようにする
+  // ランチャー自身は UI を持たないので、アクティブ化を最速で辞退する。
+  // Dock クリックでフォーカスを奪うと、直前のアプリのウィンドウ枠が
+  // 非活性 → 復帰とチカチカするため、描画される前に隠して打ち消す
+  func applicationWillBecomeActive(_ notification: Notification) {
     NSApp.hide(nil)
+  }
+
+  func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
     guard let u = URL(string: url) else { return false }
     let statsURL = u.appendingPathComponent("api/stats")
     let task = URLSession.shared.dataTask(with: statsURL) { data, _, _ in

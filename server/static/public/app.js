@@ -728,6 +728,24 @@ function updateMediaSession(t) {
   navigator.mediaSession.setActionHandler('nexttrack', () => playNext());
 }
 
+// ウィンドウ最小化などで OS の「再生中」登録から外れてメディアキーが
+// 効かなくなることがあるため、再生中は位置情報と状態を定期的に主張し続ける
+setInterval(() => {
+  if (!('mediaSession' in navigator) || !state.playing) return;
+  try {
+    const duration = state.mode === 'engine' ? engine?.duration : audio.duration;
+    const position = state.mode === 'engine' ? engine?.currentTime : audio.currentTime;
+    if (isFinite(duration) && duration > 0) {
+      navigator.mediaSession.setPositionState({
+        duration,
+        position: Math.min(Math.max(position ?? 0, 0), duration),
+        playbackRate: 1,
+      });
+    }
+    navigator.mediaSession.playbackState = isPaused() ? 'paused' : 'playing';
+  } catch { /* setPositionState 未対応環境は無視 */ }
+}, 3000);
+
 // ---- エンジンのコールバック (ギャップレス自動連結・進行表示) ---------------
 
 if (engine) {

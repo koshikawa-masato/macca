@@ -2235,7 +2235,9 @@ func (s *appState) serveDevices(w http.ResponseWriter) {
 		id := sourceID(d.Path)
 		out = append(out, outDevice{ID: id, Path: d.Path, Label: d.Label, Scanned: s.sources[id] != nil})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"devices": out})
+	// scannedAt はライブラリ世代。フロントはこれの変化で「取り外し等で
+	// ライブラリが変わった」ことを知り、各ビューの表示を取り直す
+	writeJSON(w, http.StatusOK, map[string]any{"devices": out, "scannedAt": s.scannedAt})
 }
 
 type device struct {

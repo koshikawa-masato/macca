@@ -415,6 +415,9 @@ async function serveDevices(res) {
       label: v.label,
       scanned: state.sources.has(sourceId(v.path)),
     })),
+    // ライブラリ世代。フロントはこれの変化で「取り外し等でライブラリが
+    // 変わった」ことを知り、曲・アルバム・アーティストの表示を取り直す
+    scannedAt: state.scannedAt,
   });
 }
 

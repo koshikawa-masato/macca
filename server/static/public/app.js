@@ -885,16 +885,21 @@ let deviceOpBusy = false; // スキャン・固定などの操作中は定期再
 async function refreshDevices() {
   if (deviceOpBusy) return;
   const prevIds = devices.map((d) => d.id);
+  let serverScannedAt = null;
   try {
     const res = await fetch('/api/devices');
-    devices = (await res.json()).devices ?? [];
+    const json = await res.json();
+    devices = json.devices ?? [];
+    serverScannedAt = json.scannedAt ?? null;
   } catch {
     devices = [];
   }
   if (deviceOpBusy) return;
-  // 取り外し検知: デバイスが消えたらライブラリを取り直して曲リストから消す
-  // (サーバ側が /api/devices の応答時に消えたソースを片付けている)
-  if (prevIds.some((id) => !devices.some((d) => d.id === id))) {
+  // 取り外し検知: デバイスが消えた、またはサーバ側でライブラリ世代が変わって
+  // いたら (取り外しの後片付け・別タブの操作など) ライブラリを取り直す
+  const deviceGone = prevIds.some((id) => !devices.some((d) => d.id === id));
+  const libraryChanged = serverScannedAt && state.scannedAt && serverScannedAt !== state.scannedAt;
+  if (deviceGone || (libraryChanged && !state.scanning)) {
     try {
       const res = await fetch('/api/library');
       const json = await res.json();

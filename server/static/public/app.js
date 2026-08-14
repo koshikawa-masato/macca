@@ -300,9 +300,14 @@ function renderAlbums(container) {
     // 名義表示: 全曲共通ならその名義、作曲者ごとに分かれていれば V.A. 表記
     const artists = [...new Set(ts.map((t) => t.albumArtist ?? t.artist ?? ''))];
     const artist = artists.length === 1 ? artists[0] : 'V.A.';
+    // (不明なアルバム) は専用のプレースホルダジャケットを使う
+    // (画像 unknown-album.jpg が未配置なら ♪ にフォールバック)
     const artTrack = ts.find((t) => t.hasArt) ?? ts[0];
+    const artSrc = key.startsWith('U\x1f')
+      ? '/unknown-album.jpg'
+      : `/api/artwork/${artTrack.id}?v=${artTrack.mtime ?? 0}`;
     return `<div class="album-card" data-album="${esc(key)}">
-      <div class="cover"><img loading="lazy" src="/api/artwork/${artTrack.id}?v=${artTrack.mtime ?? 0}" alt=""
+      <div class="cover"><img loading="lazy" src="${artSrc}" alt=""
         onerror="this.remove()"><span class="cover-fallback">♪</span></div>
       <div class="name">${esc(albumName(key))}</div>
       <div class="sub">${esc(artist || '—')} · ${ts.length} 曲</div>

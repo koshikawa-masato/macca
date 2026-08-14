@@ -983,8 +983,9 @@ function renderDevices() {
       actions = `<button class="dev-btn" data-scan="${esc(d.path)}">スキャン</button>`;
     }
     const icon = d.kind === 'network' ? '🗄' : '💾'; // NAS はラック、SD/USB はカード風
-    const toggleAttr = src ? ` data-srcid="${src.id}" data-srclabel="${esc(d.label)}"` : '';
-    return `<div class="dev-row${src && dis(src.id) ? ' dis' : ''}"${toggleAttr} title="${esc(d.path)}${src ? ' — ' + nameTitle : ''}">
+    // 未スキャンのデバイスも非活性にできる (デバイス id = スキャン後のソース id
+    // なので、あとでスキャンしても非表示設定が引き継がれる)
+    return `<div class="dev-row${dis(d.id) ? ' dis' : ''}" data-srcid="${d.id}" data-srclabel="${esc(d.label)}" title="${esc(d.path)} — ${nameTitle}">
       <div class="dev-name">${icon} ${esc(d.label)}</div>
       <div class="dev-actions"><span class="dev-count">${count}</span>${actions}</div></div>`;
   }).join('');

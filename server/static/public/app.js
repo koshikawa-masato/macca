@@ -10,7 +10,8 @@ const state = {
   view: 'albums',         // songs | albums | artists (既定はアルバムの棚)
   search: '',
   filterArtist: null,
-  filterAlbum: null,      // アルバムキー
+  filterAlbum: null,      // 選択中のアルバムキー (サイドバーに残る)
+  albumActive: false,     // いま選択中アルバムの曲を表示しているか
   filterFormats: new Set(),
   sortKey: null,
   sortAsc: true,
@@ -116,7 +117,9 @@ function visibleTracks() {
   if (state.filterArtist !== null) {
     list = list.filter((t) => (t.artist ?? '') === state.filterArtist || (t.albumArtist ?? '') === state.filterArtist);
   }
-  if (state.filterAlbum !== null) {
+  // 選択中アルバムでの絞り込みは曲リスト表示のときだけ。
+  // アルバム棚・アーティスト一覧に戻ったときは全体を見せる
+  if (state.filterAlbum !== null && state.albumActive && state.view === 'songs') {
     list = list.filter((t) => albumKey(t) === state.filterAlbum);
   }
   if (state.filterFormats.size > 0) {
@@ -152,7 +155,7 @@ function visibleTracks() {
       }
       return cmp(a[k], b[k]);
     });
-  } else if (state.filterAlbum !== null) {
+  } else if (state.filterAlbum !== null && state.albumActive) {
     list = [...list].sort((a, b) =>
       (a.disc ?? 0) - (b.disc ?? 0) || (a.track ?? 9999) - (b.track ?? 9999));
   }
@@ -172,14 +175,18 @@ const SONG_COLUMNS = [
 
 function renderSongs(container) {
   const list = visibleTracks();
-  const filtered = state.filterArtist !== null || state.filterAlbum !== null;
+  const albumView = state.filterAlbum !== null && state.albumActive;
 
   let head = '';
-  if (filtered) {
-    const label = state.filterAlbum !== null
-      ? state.filterAlbum.split('\x1f')[0]
-      : state.filterArtist || '(不明なアーティスト)';
-    head = `<div class="view-head"><h2>${esc(label)}</h2>
+  if (albumView) {
+    // アルバム表示: 右上はソートを既定 (ディスク順 → トラック順) に戻すだけ。
+    // アルバムから出るのはサイドバーの「すべての曲」等で行う
+    const sortBtn = state.sortKey
+      ? '<button class="clear-filter" id="clear-sort">✕ ソート解除</button>' : '';
+    head = `<div class="view-head"><h2>${esc(state.filterAlbum.split('\x1f')[0])}</h2>
+      <span class="sub">${list.length} 曲</span>${sortBtn}</div>`;
+  } else if (state.filterArtist !== null) {
+    head = `<div class="view-head"><h2>${esc(state.filterArtist || '(不明なアーティスト)')}</h2>
       <span class="sub">${list.length} 曲</span>
       <button class="clear-filter" id="clear-filter">✕ フィルタ解除</button></div>`;
   }
@@ -231,21 +238,24 @@ function renderSongs(container) {
     el.addEventListener('click', (e) => {
       e.stopPropagation();
       state.filterArtist = el.dataset.artist;
-      state.filterAlbum = null;
+      state.albumActive = false;
       setView('songs');
     });
   });
   container.querySelectorAll('[data-album]').forEach((el) => {
     el.addEventListener('click', (e) => {
       e.stopPropagation();
-      state.filterAlbum = el.dataset.album;
-      state.filterArtist = null;
-      setView('songs');
+      selectAlbum(el.dataset.album);
     });
   });
   $('#clear-filter')?.addEventListener('click', () => {
     state.filterArtist = null;
-    state.filterAlbum = null;
+    render();
+  });
+  $('#clear-sort')?.addEventListener('click', () => {
+    state.sortKey = null;
+    state.sortAsc = true;
+    syncQueueToView();
     render();
   });
   $('#more-btn')?.addEventListener('click', () => {
@@ -284,11 +294,7 @@ function renderAlbums(container) {
     <div class="album-grid">${cards}</div>`;
 
   container.querySelectorAll('.album-card').forEach((card) => {
-    card.addEventListener('click', () => {
-      state.filterAlbum = card.dataset.album;
-      state.filterArtist = null;
-      setView('songs');
-    });
+    card.addEventListener('click', () => selectAlbum(card.dataset.album));
   });
 }
 
@@ -321,13 +327,45 @@ function render() {
   if (state.view === 'albums') renderAlbums(container);
   else if (state.view === 'artists') renderArtists(container);
   else renderSongs(container);
+  renderAlbumSlot();
+}
+
+/**
+ * 選択中のアルバムをサイドバーの「すべての曲」の下に出す (iTunes 風)。
+ * 別のアルバムを選ぶと入れ替わる。すべての曲との行き来はここで行う
+ */
+function selectAlbum(key) {
+  state.filterAlbum = key;
+  state.filterArtist = null;
+  state.albumActive = true;
+  setView('songs');
+}
+
+function renderAlbumSlot() {
+  const slot = $('#album-slot');
+  if (!slot) return;
+  if (state.filterAlbum === null) {
+    slot.innerHTML = '';
+    return;
+  }
+  const name = state.filterAlbum.split('\x1f')[0];
+  const active = state.albumActive && state.view === 'songs';
+  slot.innerHTML = `<button class="nav-item album-item${active ? ' active' : ''}"
+    title="${esc(name)}">${esc(name)}</button>`;
+  slot.querySelector('button').addEventListener('click', () => {
+    state.filterArtist = null;
+    state.albumActive = true;
+    setView('songs');
+  });
 }
 
 function setView(view) {
   state.view = view;
   state.renderLimit = 1000;
-  document.querySelectorAll('.nav-item').forEach((b) =>
-    b.classList.toggle('active', b.dataset.view === view));
+  document.querySelectorAll('.nav-item:not(.album-item)').forEach((b) =>
+    // アルバムの曲を表示中は「すべての曲」ではなく選択中アルバム側を光らせる
+    b.classList.toggle('active',
+      b.dataset.view === view && !(view === 'songs' && state.albumActive)));
   if (location.hash !== `#${view}`) history.replaceState(null, '', `#${view}`);
   render();
   $('#content').scrollTop = 0;
@@ -1032,7 +1070,7 @@ $('#search').addEventListener('input', (e) => {
 document.querySelectorAll('.nav-item').forEach((b) => {
   b.addEventListener('click', () => {
     state.filterArtist = null;
-    state.filterAlbum = null;
+    state.albumActive = false; // 選択中アルバムはサイドバーに残す
     setView(b.dataset.view);
   });
 });

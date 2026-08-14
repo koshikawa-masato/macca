@@ -67,6 +67,7 @@ type track struct {
 	Path        string         `json:"path"`
 	Ext         string         `json:"ext"`
 	Size        int64          `json:"size"`
+	Mtime       int64          `json:"mtime"` // ms。アートワーク URL のキャッシュ切替に使う
 	Title       string         `json:"title"`
 	Artist      nullableString `json:"artist"`
 	AlbumArtist nullableString `json:"albumArtist"`
@@ -85,6 +86,7 @@ type clientTrack struct {
 	Path        string         `json:"path"`
 	Ext         string         `json:"ext"`
 	Size        int64          `json:"size"`
+	Mtime       int64          `json:"mtime"`
 	Title       string         `json:"title"`
 	Artist      nullableString `json:"artist"`
 	AlbumArtist nullableString `json:"albumArtist"`
@@ -584,7 +586,7 @@ func (s *appState) serveLibrary(w http.ResponseWriter) {
 	outTracks := make([]clientTrack, 0, len(s.tracks))
 	for _, t := range s.tracks {
 		outTracks = append(outTracks, clientTrack{
-			ID: t.ID, Src: t.Src, Path: t.Path, Ext: t.Ext, Size: t.Size, Title: t.Title,
+			ID: t.ID, Src: t.Src, Path: t.Path, Ext: t.Ext, Size: t.Size, Mtime: t.Mtime, Title: t.Title,
 			Artist: t.Artist, AlbumArtist: t.AlbumArtist, Album: t.Album, Genre: t.Genre,
 			Year: t.Year, Track: t.Track, Duration: t.Duration, Codec: t.Codec,
 			HasArt: t.Art != nil,
@@ -777,7 +779,8 @@ func scanLibrary(rootDir string, useCache bool) ([]track, []scanError) {
 					}
 				}
 				t := track{
-					ID: trackID(rootDir, rel), Path: rel, Ext: ext, Size: st.Size(), Title: title,
+					ID: trackID(rootDir, rel), Path: rel, Ext: ext, Size: st.Size(),
+					Mtime: int64(mtimeMs), Title: title,
 					Artist: strPtr(meta.Tags.Artist), AlbumArtist: strPtr(meta.Tags.AlbumArtist),
 					Album: strPtr(meta.Tags.Album), Genre: strPtr(meta.Tags.Genre),
 					Year: meta.Tags.Year, Track: meta.Tags.Track, Duration: meta.Duration,

@@ -259,6 +259,7 @@ function serveLibrary(res) {
     path: t.path,
     ext: t.ext,
     size: t.size,
+    mtime: t.mtime ?? 0,
     title: t.title,
     artist: t.artist,
     albumArtist: t.albumArtist,

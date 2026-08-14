@@ -255,7 +255,7 @@ function renderAlbums(container) {
     const [name, artist] = key.split('\x1f');
     const artTrack = ts.find((t) => t.hasArt) ?? ts[0];
     return `<div class="album-card" data-album="${esc(key)}">
-      <div class="cover"><img loading="lazy" src="/api/artwork/${artTrack.id}" alt=""
+      <div class="cover"><img loading="lazy" src="/api/artwork/${artTrack.id}?v=${artTrack.mtime ?? 0}" alt=""
         onerror="this.remove()"><span class="cover-fallback">♪</span></div>
       <div class="name">${esc(name)}</div>
       <div class="sub">${esc(artist || '—')} · ${ts.length} 曲</div>
@@ -401,7 +401,7 @@ function updateNowPlayingUI(t) {
   badge.textContent = formatLabel(t) + (state.transcoding ? ' → WAV' : '');
 
   const art = $('#np-art');
-  art.src = `/api/artwork/${t.id}`;
+  art.src = `/api/artwork/${t.id}?v=${t.mtime ?? 0}`;
   art.hidden = false;
   $('#np-art-placeholder').style.display = 'none';
   art.onerror = () => {
@@ -521,7 +521,7 @@ function updateMediaSession(t) {
     title: t.title,
     artist: t.artist ?? '',
     album: t.album ?? '',
-    artwork: [{ src: `/api/artwork/${t.id}`, sizes: '512x512' }],
+    artwork: [{ src: `/api/artwork/${t.id}?v=${t.mtime ?? 0}`, sizes: '512x512' }],
   });
   navigator.mediaSession.setActionHandler('play', togglePlay);
   navigator.mediaSession.setActionHandler('pause', togglePlay);

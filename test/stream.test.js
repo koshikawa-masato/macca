@@ -121,3 +121,35 @@ test('FLACリーダー: 全受信済みでも done が遅れているソース�
   assert.ok(w.length > 0, '窓が読める');
   r.destroy();
 });
+
+test('ALAC/WAV/AIFFリーダー: done が遅れているソースでも窓読みが完了する', async () => {
+  // FLAC で起きた done フラグ依存の収束レースが他形式に無いことの回帰確認
+  const lagging = (bytes) => ({
+    bytes,
+    total: bytes.byteLength,
+    get received() { return bytes.byteLength; },
+    get done() { return false; },
+    async waitFor() {},
+    async waitAll() { return bytes; },
+    cancel() {},
+  });
+
+  const alacBytes = new Uint8Array(await readFile(path.join(__dirname, 'data/alac-sine.m4a')));
+  const mod = await loadAlac(await readFile(path.join(__dirname, '../server/static/public/player/alac.wasm')));
+  const alac = await createStreamReader({ ext: '.m4a' }, lagging(alacBytes), { alacModule: mod });
+  assert.ok(alac);
+  assert.equal((await alac.readWindow(0, alac.totalSamples)).length, alac.totalSamples, 'ALAC 全体読み');
+  alac.destroy();
+
+  const wavBytes = buildWav({ title: '短い曲', artist: 'A', album: 'B' });
+  const wav = await createStreamReader({ ext: '.wav' }, lagging(new Uint8Array(wavBytes)), {});
+  assert.ok(wav);
+  assert.equal((await wav.readWindow(0, wav.totalSamples)).length, wav.totalSamples, 'WAV 全体読み');
+  wav.destroy();
+
+  const aiffBytes = buildAiff({ title: '短い曲', artist: 'A', album: 'B' });
+  const aiff = await createStreamReader({ ext: '.aiff' }, lagging(new Uint8Array(aiffBytes)), {});
+  assert.ok(aiff);
+  assert.equal((await aiff.readWindow(0, aiff.totalSamples)).length, aiff.totalSamples, 'AIFF 全体読み');
+  aiff.destroy();
+});

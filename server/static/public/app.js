@@ -1300,8 +1300,8 @@ function applyLibrary(data) {
 }
 
 (async function init() {
-  const hashView = location.hash.replace('#', '');
-  if (['songs', 'albums', 'artists'].includes(hashView)) state.view = hashView;
+  // 起動時は常にアルバム棚から (URL に前回のハッシュが残っていても引き継がない。
+  // ハッシュはセッション中の戻る/進む用にだけ使う)
   // サーバ保存の UI 設定を復元 (どのポートで開いても同じ設定になる)
   try {
     const res = await fetch('/api/settings');

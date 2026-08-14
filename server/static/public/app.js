@@ -19,9 +19,10 @@ const state = {
   queue: [],              // 再生キュー
   queueKind: 'album',     // album: アルバム全体 / list: 見えているリスト順
   queueIdx: -1,
-  // album: アルバム再生(末尾で停止) / one: 1回再生 / repeat-one: 1曲リピート
+  // repeat-all: 全曲リピート(キュー全体を循環・既定) / album: アルバム再生(末尾で停止)
+  // one: 1回再生 / repeat-one: 1曲リピート
   // repeat-album: アルバムリピート / shuffle-album: アルバムランダム
-  playMode: 'album',
+  playMode: 'repeat-all',
   shuffleBag: [],         // アルバムランダムの残り曲 (一巡するまで再シャッフルしない)
   playing: null,          // 再生中トラック
   loading: false,         // エンジンのfetch+デコード待ち
@@ -490,6 +491,7 @@ function nextQueueIdx() {
     case 'repeat-one': return state.queueIdx;
     case 'shuffle-album': return drawFromShuffleBag();
     case 'repeat-album': return (state.queueIdx + 1) % n;
+    case 'repeat-all': return (state.queueIdx + 1) % n; // キュー全体 (リスト/アルバム) を循環
     default: return state.queueIdx + 1 < n ? state.queueIdx + 1 : -1; // album
   }
 }
@@ -737,7 +739,7 @@ $('#btn-prev').addEventListener('click', playPrev);
 const modeSel = $('#play-mode');
 {
   const saved = localStorage.getItem('macca-playmode');
-  if (['album', 'one', 'repeat-one', 'repeat-album', 'shuffle-album'].includes(saved)) {
+  if (['repeat-all', 'album', 'one', 'repeat-one', 'repeat-album', 'shuffle-album'].includes(saved)) {
     state.playMode = saved;
   }
   modeSel.value = state.playMode;

@@ -98,7 +98,15 @@ function canPlayTrack(t) {
 }
 
 function albumKey(t) {
-  return `${t.album ?? '(不明なアルバム)'}\x1f${t.albumArtist ?? t.artist ?? ''}`;
+  // アルバムは「アルバム名」で束ねる。トラックごとに作曲者名義 (ALBUMARTIST) が
+  // 分かれていてもタグは書き換えず、UI 側で 1 枚にまとめるのが方針。
+  // アルバム名がない曲だけはアーティストで分ける (全部が 1 枚に混ざらないように)
+  return t.album != null ? `A\x1f${t.album}` : `U\x1f${t.artist ?? ''}`;
+}
+
+/** アルバムキーから表示名を取り出す */
+function albumName(key) {
+  return key.startsWith('A\x1f') ? key.slice(2) : '(不明なアルバム)';
 }
 
 function esc(s) {
@@ -186,7 +194,7 @@ function renderSongs(container) {
     // アルバムから出るのはサイドバーの「すべての曲」等で行う
     const sortBtn = state.sortKey
       ? '<button class="clear-filter" id="clear-sort">✕ ソート解除</button>' : '';
-    head = `<div class="view-head"><h2>${esc(state.filterAlbum.split('\x1f')[0])}</h2>
+    head = `<div class="view-head"><h2>${esc(albumName(state.filterAlbum))}</h2>
       <span class="sub">${list.length} 曲</span>${sortBtn}</div>`;
   } else if (state.filterArtist !== null && state.artistActive) {
     const sortBtn = state.sortKey
@@ -272,17 +280,19 @@ function renderAlbums(container) {
     groups.get(key).push(t);
   }
   // タグなしの寄せ集め「(不明なアルバム)」は棚の先頭ではなく最後に置く
-  const unknown = (key) => key.startsWith('(不明なアルバム)') ? 1 : 0;
+  const unknown = (key) => key.startsWith('U\x1f') ? 1 : 0;
   const albums = [...groups.entries()].sort((a, b) =>
-    unknown(a[0]) - unknown(b[0]) || collator.compare(a[0], b[0]));
+    unknown(a[0]) - unknown(b[0]) || collator.compare(albumName(a[0]), albumName(b[0])));
 
   const cards = albums.map(([key, ts]) => {
-    const [name, artist] = key.split('\x1f');
+    // 名義表示: 全曲共通ならその名義、作曲者ごとに分かれていれば V.A. 表記
+    const artists = [...new Set(ts.map((t) => t.albumArtist ?? t.artist ?? ''))];
+    const artist = artists.length === 1 ? artists[0] : 'V.A.';
     const artTrack = ts.find((t) => t.hasArt) ?? ts[0];
     return `<div class="album-card" data-album="${esc(key)}">
       <div class="cover"><img loading="lazy" src="/api/artwork/${artTrack.id}?v=${artTrack.mtime ?? 0}" alt=""
         onerror="this.remove()"><span class="cover-fallback">♪</span></div>
-      <div class="name">${esc(name)}</div>
+      <div class="name">${esc(albumName(key))}</div>
       <div class="sub">${esc(artist || '—')} · ${ts.length} 曲</div>
     </div>`;
   }).join('');
@@ -372,7 +382,7 @@ function renderAlbumSlot() {
     slot.innerHTML = '';
     return;
   }
-  const name = state.filterAlbum.split('\x1f')[0];
+  const name = albumName(state.filterAlbum);
   const active = state.albumActive && state.view === 'songs';
   slot.innerHTML = `<button class="nav-item album-item${active ? ' active' : ''}"
     title="${esc(name)}">${esc(name)}</button>`;

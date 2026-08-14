@@ -216,6 +216,7 @@ function renderSongs(container) {
         if (state.sortAsc) state.sortAsc = false;
         else { state.sortKey = null; state.sortAsc = true; }
       } else { state.sortKey = key; state.sortAsc = true; }
+      syncQueueToView();
       render();
     });
   });
@@ -359,6 +360,25 @@ function renderStats() {
 }
 
 // ---- 再生 -----------------------------------------------------------------
+
+/**
+ * 表示順が変わったとき、再生中アルバムのキューを新しい並びに合わせ直す。
+ * (降順で聴き始めた後に昇順へ戻したら、次曲も昇順の「次」になるように)
+ */
+function syncQueueToView() {
+  const playing = state.playing;
+  if (!playing || state.queue.length === 0) return;
+  if (state.playMode === 'shuffle-album') return; // ランダム中は巡回状態を壊さない
+  const key = albumKey(playing);
+  const inView = visibleTracks().filter((x) => albumKey(x) === key);
+  if (inView.length !== state.queue.length) return; // 全曲見えていなければ維持
+  const idx = inView.findIndex((x) => x.id === playing.id);
+  if (idx < 0) return;
+  state.queue = inView;
+  state.queueIdx = idx;
+  // 旧順序で先読み済みの次曲を破棄して、新しい並びで取り直す
+  if (state.mode === 'engine') engine?.refreshNext();
+}
 
 function playFromList(id) {
   const visible = visibleTracks();

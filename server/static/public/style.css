@@ -164,7 +164,19 @@ body {
   font-size: 12px;
   cursor: pointer;
 }
-.fmt-chip.active { border-color: var(--accent); color: var(--accent); }
+/* 点灯 = フィルタ対象 (形式の色で示す)。バッジと同じ配色 */
+.fmt-chip.alac { border-color: #97aaff; color: #97aaff; background: rgba(120, 150, 255, 0.10); }
+.fmt-chip.aiff, .fmt-chip.pcm { border-color: #e0b46a; color: #e0b46a; background: rgba(230, 170, 80, 0.10); }
+.fmt-chip.flac { border-color: #6fc9ec; color: #6fc9ec; background: rgba(90, 200, 250, 0.10); }
+.fmt-chip.mp3 { border-color: #a9a9bb; color: #a9a9bb; background: rgba(160, 160, 180, 0.10); }
+.fmt-chip.aac { border-color: #c893dd; color: #c893dd; background: rgba(190, 120, 220, 0.10); }
+/* グレーアウト = フィルタから外している */
+.fmt-chip.off {
+  border-color: var(--border);
+  color: var(--fg-dim);
+  background: transparent;
+  opacity: 0.45;
+}
 
 /* ---- デバイス (リムーバブルストレージ) ---- */
 .dev-empty { padding: 2px 12px; font-size: 12px; color: var(--fg-dim); }

@@ -13,7 +13,7 @@ const state = {
   artistActive: false,    // いま選択中アーティストの曲を表示しているか
   filterAlbum: null,      // 選択中のアルバムキー (サイドバーに残る)
   albumActive: false,     // いま選択中アルバムの曲を表示しているか
-  filterFormats: new Set(),
+  excludedFormats: new Set(), // フィルタから外した形式 (既定は全形式が対象)
   sortKey: null,
   sortAsc: true,
   renderLimit: 1000,
@@ -125,8 +125,8 @@ function visibleTracks() {
   if (state.filterAlbum !== null && state.albumActive && state.view === 'songs') {
     list = list.filter((t) => albumKey(t) === state.filterAlbum);
   }
-  if (state.filterFormats.size > 0) {
-    list = list.filter((t) => state.filterFormats.has(formatLabel(t)));
+  if (state.excludedFormats.size > 0) {
+    list = list.filter((t) => !state.excludedFormats.has(formatLabel(t)));
   }
   if (state.search) {
     const q = state.search.toLowerCase();
@@ -412,13 +412,22 @@ function renderFormatChips() {
     formats.set(l, (formats.get(l) ?? 0) + 1);
   }
   const el = $('#fmt-filters');
-  el.innerHTML = [...formats.entries()].sort((a, b) => b[1] - a[1]).map(([l, n]) =>
-    `<button class="fmt-chip${state.filterFormats.has(l) ? ' active' : ''}" data-fmt="${l}">${l} <small>${n}</small></button>`).join('');
+  // 点灯 (形式色) = フィルタ対象、グレーアウト = 対象から外している。既定は全点灯
+  const colorClass = (l) => {
+    const c = l.toLowerCase();
+    return c === 'wav' ? 'pcm' : ['alac', 'aac', 'flac', 'mp3', 'aiff'].includes(c) ? c : 'pcm';
+  };
+  el.innerHTML = [...formats.entries()].sort((a, b) => b[1] - a[1]).map(([l, n]) => {
+    const off = state.excludedFormats.has(l);
+    const title = off ? `${l} をフィルタに戻す` : `${l} をフィルタから外す`;
+    return `<button class="fmt-chip ${colorClass(l)}${off ? ' off' : ''}" data-fmt="${l}"
+      title="${title}">${l} <small>${n}</small></button>`;
+  }).join('');
   el.querySelectorAll('.fmt-chip').forEach((chip) => {
     chip.addEventListener('click', () => {
       const f = chip.dataset.fmt;
-      if (state.filterFormats.has(f)) state.filterFormats.delete(f);
-      else state.filterFormats.add(f);
+      if (state.excludedFormats.has(f)) state.excludedFormats.delete(f);
+      else state.excludedFormats.add(f);
       renderFormatChips();
       render();
     });

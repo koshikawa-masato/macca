@@ -95,3 +95,29 @@ test('scanLibrary: 全ファイルを列挙し既定順に並べる', async () =
   assert.equal(alac.codec, 'alac');
   assert.equal(alac.title, '青い部屋');
 });
+
+test('ディスク番号: 複数枚組はディスク順 → トラック順に並ぶ', async () => {
+  const { mkdtemp: mkd } = await import('node:fs/promises');
+  const { writeFile } = await import('node:fs/promises');
+  const { buildMp3, buildFlac } = await import('./fixtures.js');
+  const d = await mkd(path.join(tmpdir(), 'macca-disc-'));
+  try {
+    // 各ディスクはトラック 1 から数え直す (通し番号ではない)
+    await writeFile(path.join(d, 'd2t1.mp3'),
+      buildMp3({ title: '二枚目の一曲目', artist: 'A', album: '二枚組', track: 1, disc: 2 }));
+    await writeFile(path.join(d, 'd1t1.flac'),
+      buildFlac({ title: '一枚目の一曲目', artist: 'A', album: '二枚組', track: 1, disc: 1 }));
+    await writeFile(path.join(d, 'd1t2.flac'),
+      buildFlac({ title: '一枚目の二曲目', artist: 'A', album: '二枚組', track: 2, disc: 1 }));
+
+    const m = await readMetadata(path.join(d, 'd2t1.mp3'), (await stat(path.join(d, 'd2t1.mp3'))).size);
+    assert.equal(m.tags.disc, 2, 'TPOS "2/2" から数値部を読む');
+
+    const { tracks } = await scanLibrary(d, { useCache: false });
+    assert.deepEqual(tracks.map((t) => t.title),
+      ['一枚目の一曲目', '一枚目の二曲目', '二枚目の一曲目']);
+    assert.deepEqual(tracks.map((t) => t.disc), [1, 1, 2]);
+  } finally {
+    await rm(d, { recursive: true, force: true });
+  }
+});

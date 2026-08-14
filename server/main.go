@@ -75,6 +75,7 @@ type track struct {
 	Genre       nullableString `json:"genre"`
 	Year        nullableInt    `json:"year"`
 	Track       nullableInt    `json:"track"`
+	Disc        nullableInt    `json:"disc"`
 	Duration    nullableFloat  `json:"duration"`
 	Codec       nullableString `json:"codec"`
 	Art         *artInfo       `json:"art,omitempty"`
@@ -94,6 +95,7 @@ type clientTrack struct {
 	Genre       nullableString `json:"genre"`
 	Year        nullableInt    `json:"year"`
 	Track       nullableInt    `json:"track"`
+	Disc        nullableInt    `json:"disc"`
 	Duration    nullableFloat  `json:"duration"`
 	Codec       nullableString `json:"codec"`
 	HasArt      bool           `json:"hasArt"`
@@ -117,6 +119,7 @@ type tags struct {
 	Genre       string `json:"genre,omitempty"`
 	Year        *int   `json:"year,omitempty"`
 	Track       *int   `json:"track,omitempty"`
+	Disc        *int   `json:"disc,omitempty"`
 }
 
 type metadataResult struct {
@@ -588,7 +591,7 @@ func (s *appState) serveLibrary(w http.ResponseWriter) {
 		outTracks = append(outTracks, clientTrack{
 			ID: t.ID, Src: t.Src, Path: t.Path, Ext: t.Ext, Size: t.Size, Mtime: t.Mtime, Title: t.Title,
 			Artist: t.Artist, AlbumArtist: t.AlbumArtist, Album: t.Album, Genre: t.Genre,
-			Year: t.Year, Track: t.Track, Duration: t.Duration, Codec: t.Codec,
+			Year: t.Year, Track: t.Track, Disc: t.Disc, Duration: t.Duration, Codec: t.Codec,
 			HasArt: t.Art != nil,
 		})
 	}
@@ -689,6 +692,17 @@ func sortTracks(tracks []track) {
 		if cmp := strings.Compare(value(a.Album), value(b.Album)); cmp != 0 {
 			return cmp < 0
 		}
+		// 複数枚組はディスク順を先に見る (各ディスクはトラック 1 から数え直す前提)
+		da, db := 0, 0
+		if a.Disc != nil {
+			da = *a.Disc
+		}
+		if b.Disc != nil {
+			db = *b.Disc
+		}
+		if da != db {
+			return da < db
+		}
 		ta, tb := 9999, 9999
 		if a.Track != nil {
 			ta = *a.Track
@@ -783,7 +797,7 @@ func scanLibrary(rootDir string, useCache bool) ([]track, []scanError) {
 					Mtime: int64(mtimeMs), Title: title,
 					Artist: strPtr(meta.Tags.Artist), AlbumArtist: strPtr(meta.Tags.AlbumArtist),
 					Album: strPtr(meta.Tags.Album), Genre: strPtr(meta.Tags.Genre),
-					Year: meta.Tags.Year, Track: meta.Tags.Track, Duration: meta.Duration,
+					Year: meta.Tags.Year, Track: meta.Tags.Track, Disc: meta.Tags.Disc, Duration: meta.Duration,
 					Codec: strPtr(meta.Codec), Art: meta.Art,
 				}
 				results <- struct {
@@ -849,7 +863,7 @@ func loadCache(rootDir string) map[string]cacheEntry {
 		return map[string]cacheEntry{}
 	}
 	var cf cacheFile
-	if json.Unmarshal(data, &cf) != nil || cf.Version != 1 || cf.Files == nil {
+	if json.Unmarshal(data, &cf) != nil || cf.Version != 2 || cf.Files == nil {
 		return map[string]cacheEntry{}
 	}
 	return cf.Files
@@ -857,7 +871,7 @@ func loadCache(rootDir string) map[string]cacheEntry {
 
 func saveCache(rootDir string, files map[string]cacheEntry) {
 	_ = os.MkdirAll(cacheDir(), 0o755)
-	data, err := json.Marshal(cacheFile{Version: 1, Files: files})
+	data, err := json.Marshal(cacheFile{Version: 2, Files: files})
 	if err == nil {
 		_ = os.WriteFile(cacheFileFor(rootDir), data, 0o644)
 	}
@@ -1058,9 +1072,9 @@ func estimateMP3Duration(buf []byte, audioSize int64) float64 {
 // lib/id3.js の TEXT_FRAMES と同一 (v2.3/2.4 の 4 文字 ID + v2.2 の 3 文字 ID)
 var id3TextFrames = map[string]string{
 	"TIT2": "title", "TPE1": "artist", "TPE2": "albumArtist", "TALB": "album",
-	"TCON": "genre", "TRCK": "track", "TYER": "year", "TDRC": "year",
+	"TCON": "genre", "TRCK": "track", "TPOS": "disc", "TYER": "year", "TDRC": "year",
 	"TT2": "title", "TP1": "artist", "TP2": "albumArtist", "TAL": "album",
-	"TCO": "genre", "TRK": "track", "TYE": "year",
+	"TCO": "genre", "TRK": "track", "TPA": "disc", "TYE": "year",
 }
 
 /* 0xFF 0x00 → 0xFF の unsynchronisation を戻す */
@@ -1574,6 +1588,8 @@ func parseVorbisComment(b []byte, t *tags) {
 			t.Year = parseYear(val)
 		case "TRACKNUMBER":
 			t.Track = parseLeadingInt(val)
+		case "DISCNUMBER":
+			t.Disc = parseLeadingInt(val)
 		}
 	}
 }
@@ -1670,6 +1686,10 @@ func parseMP4(f *os.File, fileSize int64) metadataResult {
 			if n := readMP4Track(f, a); n != nil {
 				r.Tags.Track = n
 			}
+		case "disk":
+			if n := readMP4Track(f, a); n != nil {
+				r.Tags.Disc = n
+			}
 		case "gnre":
 			// ID3v1 ジャンル番号 + 1 で格納されている (lib/mp4.js と同一)
 			if r.Tags.Genre == "" {
@@ -1739,7 +1759,7 @@ func isContainerAtom(typ string) bool {
 	case "moov", "trak", "mdia", "minf", "stbl", "udta", "meta", "ilst", "stsd":
 		return true
 	default:
-		return strings.HasPrefix(typ, "\xa9") || typ == "trkn" || typ == "covr" || typ == "gnre" || typ == "aART"
+		return strings.HasPrefix(typ, "\xa9") || typ == "trkn" || typ == "disk" || typ == "covr" || typ == "gnre" || typ == "aART"
 	}
 }
 

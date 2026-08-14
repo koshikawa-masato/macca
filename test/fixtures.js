@@ -86,6 +86,7 @@ export function buildId3(tags, art = null, extraFrames = []) {
   if (tags.artist) frames.push(id3TextFrame('TPE1', tags.artist, 0)); // 偽 latin1
   if (tags.album) frames.push(id3TextFrame('TALB', tags.album, 3));   // UTF-8
   if (tags.track) frames.push(id3TextFrame('TRCK', String(tags.track), 0));
+  if (tags.disc) frames.push(id3TextFrame('TPOS', `${tags.disc}/2`, 0));
   if (tags.year) frames.push(id3TextFrame('TYER', String(tags.year), 0));
   if (tags.genre) frames.push(id3TextFrame('TCON', tags.genre, 0));
   if (art) {
@@ -329,6 +330,7 @@ export function buildFlac(tags, art = null, { sampleRate = 44100, totalSamples =
   if (tags.artist) comments.push(`ARTIST=${tags.artist}`);
   if (tags.album) comments.push(`ALBUM=${tags.album}`);
   if (tags.track) comments.push(`TRACKNUMBER=${tags.track}`);
+  if (tags.disc) comments.push(`DISCNUMBER=${tags.disc}`);
   if (tags.year) comments.push(`DATE=${tags.year}`);
   const vendor = Buffer.from('macca-test', 'utf8');
   const parts = [Buffer.alloc(4), vendor, Buffer.alloc(4)];

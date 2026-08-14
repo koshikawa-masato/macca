@@ -267,6 +267,7 @@ function serveLibrary(res) {
     genre: t.genre,
     year: t.year,
     track: t.track,
+    disc: t.disc,
     duration: t.duration,
     codec: t.codec,
     hasArt: Boolean(t.art),

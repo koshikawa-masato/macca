@@ -141,7 +141,8 @@ function visibleTracks() {
       return collator.compare(String(va), String(vb)) * dir;
     });
   } else if (state.filterAlbum !== null) {
-    list = [...list].sort((a, b) => (a.track ?? 9999) - (b.track ?? 9999));
+    list = [...list].sort((a, b) =>
+      (a.disc ?? 0) - (b.disc ?? 0) || (a.track ?? 9999) - (b.track ?? 9999));
   }
   return list;
 }
@@ -350,11 +351,12 @@ function renderStats() {
 function playFromList(id) {
   const t = visibleTracks().find((x) => x.id === id);
   if (!t) return;
-  // 再生キューはクリックした曲のアルバム全体 (トラック番号順)
+  // 再生キューはクリックした曲のアルバム全体 (ディスク順 → トラック番号順)
   const key = albumKey(t);
   const album = state.tracks
     .filter((x) => albumKey(x) === key)
-    .sort((a, b) => (a.track ?? 9999) - (b.track ?? 9999) || collator.compare(a.title, b.title));
+    .sort((a, b) => (a.disc ?? 0) - (b.disc ?? 0) ||
+      (a.track ?? 9999) - (b.track ?? 9999) || collator.compare(a.title, b.title));
   state.queue = album;
   state.queueIdx = album.indexOf(t);
   state.shuffleBag = [];

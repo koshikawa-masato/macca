@@ -9,7 +9,8 @@ const state = {
   dir: '',
   view: 'albums',         // songs | albums | artists (既定はアルバムの棚)
   search: '',
-  filterArtist: null,
+  filterArtist: null,     // 選択中のアーティスト (サイドバーに残る)
+  artistActive: false,    // いま選択中アーティストの曲を表示しているか
   filterAlbum: null,      // 選択中のアルバムキー (サイドバーに残る)
   albumActive: false,     // いま選択中アルバムの曲を表示しているか
   filterFormats: new Set(),
@@ -19,10 +20,11 @@ const state = {
   queue: [],              // 再生キュー
   queueKind: 'album',     // album: アルバム全体 / list: 見えているリスト順
   queueIdx: -1,
-  // repeat-all: 全曲リピート(キュー全体を循環・既定) / album: アルバム再生(末尾で停止)
-  // one: 1回再生 / repeat-one: 1曲リピート
-  // repeat-album: アルバムリピート / shuffle-album: アルバムランダム
+  // repeat-all: 全曲リピート / album: アルバム再生(末尾で停止) / one: 1回再生
+  // repeat-one: 1曲リピート / repeat-album: アルバムリピート / shuffle-album: アルバムランダム
   playMode: 'repeat-all',
+  // コンテキストごとの選択を記憶 (list: すべての曲 / album: アルバム再生時)
+  playModes: { list: 'repeat-all', album: 'repeat-album' },
   shuffleBag: [],         // アルバムランダムの残り曲 (一巡するまで再シャッフルしない)
   playing: null,          // 再生中トラック
   loading: false,         // エンジンのfetch+デコード待ち
@@ -116,11 +118,10 @@ function toast(msg, ms = 3500) {
 
 function visibleTracks() {
   let list = state.tracks;
-  if (state.filterArtist !== null) {
+  // 選択中アーティスト/アルバムでの絞り込みは曲リスト表示のときだけ
+  if (state.filterArtist !== null && state.artistActive && state.view === 'songs') {
     list = list.filter((t) => (t.artist ?? '') === state.filterArtist || (t.albumArtist ?? '') === state.filterArtist);
   }
-  // 選択中アルバムでの絞り込みは曲リスト表示のときだけ。
-  // アルバム棚・アーティスト一覧に戻ったときは全体を見せる
   if (state.filterAlbum !== null && state.albumActive && state.view === 'songs') {
     list = list.filter((t) => albumKey(t) === state.filterAlbum);
   }
@@ -187,10 +188,11 @@ function renderSongs(container) {
       ? '<button class="clear-filter" id="clear-sort">✕ ソート解除</button>' : '';
     head = `<div class="view-head"><h2>${esc(state.filterAlbum.split('\x1f')[0])}</h2>
       <span class="sub">${list.length} 曲</span>${sortBtn}</div>`;
-  } else if (state.filterArtist !== null) {
+  } else if (state.filterArtist !== null && state.artistActive) {
+    const sortBtn = state.sortKey
+      ? '<button class="clear-filter" id="clear-sort">✕ ソート解除</button>' : '';
     head = `<div class="view-head"><h2>${esc(state.filterArtist || '(不明なアーティスト)')}</h2>
-      <span class="sub">${list.length} 曲</span>
-      <button class="clear-filter" id="clear-filter">✕ フィルタ解除</button></div>`;
+      <span class="sub">${list.length} 曲</span>${sortBtn}</div>`;
   }
 
   const ths = SONG_COLUMNS.map(([key, label]) => {
@@ -239,9 +241,7 @@ function renderSongs(container) {
   container.querySelectorAll('[data-artist]').forEach((el) => {
     el.addEventListener('click', (e) => {
       e.stopPropagation();
-      state.filterArtist = el.dataset.artist;
-      state.albumActive = false;
-      setView('songs');
+      selectArtist(el.dataset.artist);
     });
   });
   container.querySelectorAll('[data-album]').forEach((el) => {
@@ -249,10 +249,6 @@ function renderSongs(container) {
       e.stopPropagation();
       selectAlbum(el.dataset.album);
     });
-  });
-  $('#clear-filter')?.addEventListener('click', () => {
-    state.filterArtist = null;
-    render();
   });
   $('#clear-sort')?.addEventListener('click', () => {
     state.sortKey = null;
@@ -316,11 +312,7 @@ function renderArtists(container) {
     <div class="artist-list">${rows}</div>`;
 
   container.querySelectorAll('.artist-row').forEach((row) => {
-    row.addEventListener('click', () => {
-      state.filterArtist = row.dataset.artist;
-      state.filterAlbum = null;
-      setView('songs');
-    });
+    row.addEventListener('click', () => selectArtist(row.dataset.artist));
   });
 }
 
@@ -330,6 +322,7 @@ function render() {
   else if (state.view === 'artists') renderArtists(container);
   else renderSongs(container);
   renderAlbumSlot();
+  renderArtistSlot();
 }
 
 /**
@@ -338,9 +331,38 @@ function render() {
  */
 function selectAlbum(key) {
   state.filterAlbum = key;
-  state.filterArtist = null;
   state.albumActive = true;
+  state.artistActive = false; // アーティスト選択はサイドバーに残したまま非表示に
   setView('songs');
+  updateModeSelector(); // 未再生ならアルバム向けのモード群 (既定: アルバムリピート) に
+}
+
+/** 選択中アーティストをサイドバーの「アーティスト」配下に置く (アルバムと対称) */
+function selectArtist(name) {
+  state.filterArtist = name;
+  state.artistActive = true;
+  state.albumActive = false;
+  setView('songs');
+  updateModeSelector();
+}
+
+function renderArtistSlot() {
+  const slot = $('#artist-slot');
+  if (!slot) return;
+  if (state.filterArtist === null) {
+    slot.innerHTML = '';
+    return;
+  }
+  const name = state.filterArtist || '(不明なアーティスト)';
+  const active = state.artistActive && state.view === 'songs';
+  slot.innerHTML = `<button class="nav-item album-item${active ? ' active' : ''}"
+    title="${esc(name)}">${esc(name)}</button>`;
+  slot.querySelector('button').addEventListener('click', () => {
+    state.artistActive = true;
+    state.albumActive = false;
+    setView('songs');
+    updateModeSelector();
+  });
 }
 
 function renderAlbumSlot() {
@@ -355,9 +377,10 @@ function renderAlbumSlot() {
   slot.innerHTML = `<button class="nav-item album-item${active ? ' active' : ''}"
     title="${esc(name)}">${esc(name)}</button>`;
   slot.querySelector('button').addEventListener('click', () => {
-    state.filterArtist = null;
     state.albumActive = true;
+    state.artistActive = false;
     setView('songs');
+    updateModeSelector();
   });
 }
 
@@ -365,9 +388,10 @@ function setView(view) {
   state.view = view;
   state.renderLimit = 1000;
   document.querySelectorAll('.nav-item:not(.album-item)').forEach((b) =>
-    // アルバムの曲を表示中は「すべての曲」ではなく選択中アルバム側を光らせる
+    // アルバム/アーティストの曲を表示中は「すべての曲」ではなく選択側を光らせる
     b.classList.toggle('active',
-      b.dataset.view === view && !(view === 'songs' && state.albumActive)));
+      b.dataset.view === view &&
+      !(view === 'songs' && (state.albumActive || state.artistActive))));
   if (location.hash !== `#${view}`) history.replaceState(null, '', `#${view}`);
   render();
   $('#content').scrollTop = 0;
@@ -463,6 +487,7 @@ function playFromList(id) {
   }
   state.queueIdx = state.queue.indexOf(t);
   state.shuffleBag = [];
+  updateModeSelector(); // キューのコンテキストに合わせてモード群を切り替える
   playTrack(t);
 }
 
@@ -736,20 +761,50 @@ $('#btn-play').addEventListener('click', togglePlay);
 $('#btn-next').addEventListener('click', () => playNext());
 $('#btn-prev').addEventListener('click', playPrev);
 
+// 再生モードはコンテキスト連動: すべての曲 (リスト再生) とアルバム再生で
+// 出す項目と既定値を分ける。選んだモードはコンテキストごとに記憶する
+const MODE_OPTIONS = {
+  list: [
+    ['repeat-all', '全曲リピート'],
+    ['one', '1回再生'],
+    ['repeat-one', '1曲リピート'],
+  ],
+  album: [
+    ['repeat-album', 'アルバムリピート'],
+    ['album', 'アルバム再生'],
+    ['one', '1回再生'],
+    ['repeat-one', '1曲リピート'],
+    ['shuffle-album', 'アルバムランダム'],
+  ],
+};
+
 const modeSel = $('#play-mode');
-{
-  const saved = localStorage.getItem('macca-playmode');
-  if (['repeat-all', 'album', 'one', 'repeat-one', 'repeat-album', 'shuffle-album'].includes(saved)) {
-    state.playMode = saved;
-  }
-  modeSel.value = state.playMode;
+
+/** いまのモード選択が対象にしているコンテキスト (再生中はキュー、未再生は表示) */
+function modeContext() {
+  if (state.queue.length > 0) return state.queueKind === 'list' ? 'list' : 'album';
+  return state.filterAlbum !== null && state.albumActive ? 'album' : 'list';
 }
+
+function updateModeSelector() {
+  const ctx = modeContext();
+  const options = MODE_OPTIONS[ctx];
+  modeSel.innerHTML = options.map(([v, label]) => `<option value="${v}">${label}</option>`).join('');
+  let mode = state.playModes[ctx];
+  if (!options.some(([v]) => v === mode)) mode = options[0][0];
+  state.playMode = mode;
+  modeSel.value = mode;
+}
+
 modeSel.addEventListener('change', () => {
+  const ctx = modeContext();
   state.playMode = modeSel.value;
-  saveSetting('playMode', state.playMode);
+  state.playModes[ctx] = modeSel.value;
+  saveSetting(ctx === 'list' ? 'playModeList' : 'playModeAlbum', modeSel.value);
   state.shuffleBag = [];
   if (state.mode === 'engine') engine?.refreshNext(); // 先読み済みの次曲を取り直す
 });
+updateModeSelector();
 
 // ---- サーバ保存の UI 設定 -------------------------------------------------
 // 多重起動でポートが変わると localStorage は別サイト扱いで引き継がれないため、
@@ -774,10 +829,13 @@ function applyServerSettings(s) {
     engine?.setNormalization(state.normalize);
     normBtn.classList.toggle('on', state.normalize);
   }
-  if (['repeat-all', 'album', 'one', 'repeat-one', 'repeat-album', 'shuffle-album'].includes(s?.playMode)) {
-    state.playMode = s.playMode;
-    modeSel.value = s.playMode;
+  if (['repeat-all', 'one', 'repeat-one'].includes(s?.playModeList)) {
+    state.playModes.list = s.playModeList;
   }
+  if (['repeat-album', 'album', 'one', 'repeat-one', 'shuffle-album'].includes(s?.playModeAlbum)) {
+    state.playModes.album = s.playModeAlbum;
+  }
+  updateModeSelector();
   if (typeof s?.volume === 'number' && isFinite(s.volume)) {
     volbar.value = Math.min(100, Math.max(0, s.volume));
     audio.volume = volbar.value / 100;
@@ -1138,11 +1196,13 @@ $('#search').addEventListener('input', (e) => {
   }, 150);
 });
 
-document.querySelectorAll('.nav-item').forEach((b) => {
+document.querySelectorAll('.nav-item:not(.album-item)').forEach((b) => {
   b.addEventListener('click', () => {
-    state.filterArtist = null;
-    state.albumActive = false; // 選択中アルバムはサイドバーに残す
+    // 選択中アルバム・アーティストはサイドバーに残したまま非表示にする
+    state.albumActive = false;
+    state.artistActive = false;
     setView(b.dataset.view);
+    updateModeSelector();
   });
 });
 

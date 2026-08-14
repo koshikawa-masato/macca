@@ -762,7 +762,7 @@ function renderDevices() {
       actions = `<span class="pin-badge" title="固定ライブラリ (解除は ⚙ フォルダ設定から)">固定中</span>
         <button class="dev-btn" data-rescan="${d.id}" title="このデバイスだけ読み直す">再スキャン</button>`;
     } else if (d.scanned) {
-      actions = `<button class="dev-btn" data-eject="${d.id}" title="一覧から外す (ファイルには触れません)">✕</button>`;
+      actions = `<button class="dev-btn" data-eject="${d.id}" title="一覧から外す (ファイルには触れません)">解除</button>`;
     } else {
       // 固定は ⚙ フォルダ設定から行う。ここは今回だけのスキャンのみ
       actions = `<button class="dev-btn" data-scan="${esc(d.path)}">スキャン</button>`;

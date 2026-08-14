@@ -892,56 +892,57 @@ function renderDevices() {
   }));
 }
 
-// ---- デバッグモード (メモリ・CPU 表示) --------------------------------------
+// ---- デバッグ HUD (画面右下の小型カード) ------------------------------------
 
 let debugTimer = null;
 
 async function updateDebugPanel() {
-  const panel = $('#debug-panel');
-  const lines = [];
+  const hud = $('#debug-hud');
+  const rows = [];
   try {
     const res = await fetch('/api/stats');
     const st = res.ok ? await res.json() : null;
     if (typeof st?.rss !== 'number') {
-      lines.push('サーバ: 旧バージョンです (アプリを再起動すると表示されます)');
+      rows.push(['サーバ', '旧バージョン (要再起動)']);
     } else {
       const cpu = st.cpu >= 0 ? `${st.cpu.toFixed(1)}%` : '—';
-      lines.push(`サーバ: ${(st.rss / 1048576).toFixed(1)} MB · CPU ${cpu}`);
+      rows.push(['サーバ', `${(st.rss / 1048576).toFixed(1)} MB · CPU ${cpu}`]);
     }
   } catch {
-    lines.push('サーバ: 取得失敗');
+    rows.push(['サーバ', '取得失敗']);
   }
   if (performance.memory) {
-    lines.push(`ブラウザ: ヒープ ${(performance.memory.usedJSHeapSize / 1048576).toFixed(1)} MB`);
+    rows.push(['ヒープ', `${(performance.memory.usedJSHeapSize / 1048576).toFixed(1)} MB`]);
   }
   // ソースごとの直近スキャン所要 (「遅い」と感じたときに数字で確認できる)
   const scans = (state.sources ?? []).filter((s) => s.scanSeconds > 0)
     .map((s) => `${s.label} ${s.scanSeconds.toFixed(1)}s`).join(' · ');
-  if (scans) lines.push(`スキャン: ${scans}`);
+  if (scans) rows.push(['スキャン', scans]);
   if (engine?.current) {
     const c = engine.current;
-    lines.push(c.kind === 'stream'
-      ? `エンジン: stream · セグメント ${c.segments.length} 保持`
-      : 'エンジン: buffer (全体デコード)');
+    rows.push(['エンジン', c.kind === 'stream'
+      ? `stream · セグメント ${c.segments.length}`
+      : 'buffer (全体デコード)']);
   }
   if (engine) {
     const s = engine.stats;
     const counters = `p${s.play} a${s.advance} d${s.decodeNext} s${s.schedule} P${s.pump}/${s.pumpLoop} W${s.watchdog ?? 0}`;
-    lines.push(`内部: ${counters}`);
+    rows.push(['内部', counters]);
     // フリーズしてもタブタイトルは残るので、診断の手がかりとして書き出す。
     // ただし再生中のみ (起動直後のタブ名にデバッグ文を入り込ませない)
     document.title = state.playing
       ? `${state.playing.title} — macca [${counters}]`
       : 'macca — ローカル音楽ライブラリ';
   }
-  panel.textContent = lines.join('\n');
+  hud.innerHTML = rows.map(([k, v]) =>
+    `<span class="k">${esc(k)}</span><span class="v">${esc(v)}</span>`).join('');
 }
 
 function setDebugMode(on) {
-  const panel = $('#debug-panel');
   clearInterval(debugTimer);
   debugTimer = null;
-  panel.hidden = !on;
+  $('#debug-hud').hidden = !on;
+  $('#debug-btn').classList.toggle('on', on);
   if (on) {
     updateDebugPanel();
     debugTimer = setInterval(updateDebugPanel, 3000);
@@ -952,10 +953,9 @@ function setDebugMode(on) {
 }
 
 {
-  const check = $('#debug-check');
-  check.checked = localStorage.getItem('macca-debug') === '1';
-  if (check.checked) setDebugMode(true);
-  check.addEventListener('change', () => setDebugMode(check.checked));
+  const btn = $('#debug-btn');
+  if (localStorage.getItem('macca-debug') === '1') setDebugMode(true);
+  btn.addEventListener('click', () => setDebugMode($('#debug-hud').hidden));
 }
 
 // フォルダを固定ライブラリにする (⚙ フォルダ設定のフォルダ選択から呼ばれる)

@@ -97,7 +97,13 @@ body {
   flex-direction: column;
 }
 #sidebar > * { flex-shrink: 0; }
-#sidebar-bottom { margin-top: auto; padding-top: 12px; }
+#sidebar-bottom {
+  margin-top: auto;
+  padding-top: 12px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
 #settings-btn {
   display: flex;
   align-items: center;
@@ -206,24 +212,40 @@ body {
   padding: 2px 8px;
 }
 
-/* ---- デバッグモード ---- */
-#debug-toggle {
-  display: block;
-  margin: 16px 12px 4px;
-  font-size: 11.5px;
-  color: var(--fg-dim);
+/* ---- デバッグ HUD (画面右下の小型カード) ---- */
+#debug-btn {
+  flex-shrink: 0;
+  border: none;
+  background: transparent;
+  font-size: 15px;
+  padding: 8px 10px;
+  border-radius: 8px;
   cursor: pointer;
-  user-select: none;
+  filter: grayscale(1) opacity(0.55);
 }
-#debug-toggle input { vertical-align: -1px; margin-right: 4px; }
-#debug-panel {
-  margin: 2px 12px;
+#debug-btn:hover { background: var(--bg3); filter: grayscale(0.3); }
+#debug-btn.on { filter: none; background: var(--bg3); }
+#debug-hud {
+  position: fixed;
+  right: 14px;
+  bottom: 92px; /* プレーヤバーの上 */
+  z-index: 50;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 3px 12px;
+  max-width: 300px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--bg2) 90%, transparent);
+  backdrop-filter: blur(4px);
   font-size: 11px;
-  color: var(--fg-dim);
-  line-height: 1.8;
+  line-height: 1.5;
   font-variant-numeric: tabular-nums;
-  white-space: pre-line;
+  pointer-events: none; /* 再生の邪魔をしない: クリックは透過 */
 }
+#debug-hud .k { color: var(--fg-dim); }
+#debug-hud .v { color: var(--fg); word-break: break-all; }
 /* ダイアログ (フォルダ選択・固定ライブラリ設定) */
 #browse-dialog,
 #settings-dialog {

@@ -27,10 +27,9 @@
     <div id="fmt-filters"></div>
     <div class="nav-section">ソース</div>
     <div id="devices"><div class="dev-empty">検出中…</div></div>
-    <label id="debug-toggle"><input type="checkbox" id="debug-check"> デバッグ</label>
-    <div id="debug-panel" hidden></div>
     <div id="sidebar-bottom">
       <button id="settings-btn" title="固定ライブラリの設定"><span class="gear">⚙</span> フォルダ設定</button>
+      <button id="debug-btn" title="デバッグ表示 (画面右下に負荷・エンジン状態の小型パネル)">🐞</button>
     </div>
     <dialog id="settings-dialog">
       <div class="dlg-title">固定ライブラリ</div>
@@ -92,6 +91,7 @@
 
 <audio id="audio" preload="auto"></audio>
 <div id="toast" hidden></div>
+<div id="debug-hud" hidden></div>
 <script type="module" src="/app.js"></script>
 </body>
 </html>

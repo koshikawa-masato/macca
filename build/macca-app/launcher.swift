@@ -93,15 +93,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let chromium = ["com.google.chrome", "com.microsoft.edgemac", "com.brave.browser",
                     "com.vivaldi.vivaldi", "org.chromium.chromium"]
     let script: String
+    // ちらつき防止: ウィンドウが背面のうちにタブを切り替えてから前面化する
+    // (先に activate すると、切り替え前の別タブが一瞬見えてしまう)
     if idLower == "com.apple.safari" {
       script = """
       tell application id "\(bundleID)"
-        activate
         repeat with w in windows
           repeat with t in tabs of w
             if (URL of t contains "\(h1)") or (URL of t contains "\(h2)") then
               set current tab of w to t
               set index of w to 1
+              activate
               return "ok"
             end if
           end repeat
@@ -112,13 +114,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     } else if chromium.contains(where: { idLower.hasPrefix($0) }) {
       script = """
       tell application id "\(bundleID)"
-        activate
         repeat with w in windows
           set i to 1
           repeat with t in tabs of w
             if (URL of t contains "\(h1)") or (URL of t contains "\(h2)") then
               set active tab index of w to i
               set index of w to 1
+              activate
               return "ok"
             end if
             set i to i + 1

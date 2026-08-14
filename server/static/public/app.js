@@ -16,7 +16,8 @@ const state = {
   sortKey: null,
   sortAsc: true,
   renderLimit: 1000,
-  queue: [],              // 再生キュー (クリックした曲のアルバム全体)
+  queue: [],              // 再生キュー
+  queueKind: 'album',     // album: アルバム全体 / list: 見えているリスト順
   queueIdx: -1,
   // album: アルバム再生(末尾で停止) / one: 1回再生 / repeat-one: 1曲リピート
   // repeat-album: アルバムリピート / shuffle-album: アルバムランダム
@@ -416,13 +417,22 @@ function syncQueueToView() {
   const playing = state.playing;
   if (!playing || state.queue.length === 0) return;
   if (state.playMode === 'shuffle-album') return; // ランダム中は巡回状態を壊さない
-  const key = albumKey(playing);
-  const inView = visibleTracks().filter((x) => albumKey(x) === key);
-  if (inView.length !== state.queue.length) return; // 全曲見えていなければ維持
-  const idx = inView.findIndex((x) => x.id === playing.id);
-  if (idx < 0) return;
-  state.queue = inView;
-  state.queueIdx = idx;
+  if (state.queueKind === 'list') {
+    // リスト再生中: 新しい表示順のリストをそのままキューにする
+    const visible = visibleTracks();
+    const idx = visible.findIndex((x) => x.id === playing.id);
+    if (idx < 0) return; // 再生中の曲が見えない絞り込みになったら維持
+    state.queue = visible;
+    state.queueIdx = idx;
+  } else {
+    const key = albumKey(playing);
+    const inView = visibleTracks().filter((x) => albumKey(x) === key);
+    if (inView.length !== state.queue.length) return; // 全曲見えていなければ維持
+    const idx = inView.findIndex((x) => x.id === playing.id);
+    if (idx < 0) return;
+    state.queue = inView;
+    state.queueIdx = idx;
+  }
   // 旧順序で先読み済みの次曲を破棄して、新しい並びで取り直す
   if (state.mode === 'engine') engine?.refreshNext();
 }
@@ -431,18 +441,26 @@ function playFromList(id) {
   const visible = visibleTracks();
   const t = visible.find((x) => x.id === id);
   if (!t) return;
-  // 再生キューはクリックした曲のアルバム全体。並びは「いま見えている順」に
-  // 従う (# を降順にしていれば 19 → 18 → … と再生する)。ソートや検索で
-  // アルバムの一部しか見えていない場合は、既定のディスク順 → トラック順
-  const key = albumKey(t);
-  const inView = visible.filter((x) => albumKey(x) === key);
-  const whole = state.tracks.filter((x) => albumKey(x) === key);
-  const album = inView.length === whole.length
-    ? inView
-    : whole.sort((a, b) => (a.disc ?? 0) - (b.disc ?? 0) ||
-        (a.track ?? 9999) - (b.track ?? 9999) || collator.compare(a.title, b.title));
-  state.queue = album;
-  state.queueIdx = album.indexOf(t);
+  const albumView = state.filterAlbum !== null && state.albumActive;
+  if (albumView) {
+    // アルバム表示: 再生キューはそのアルバム全体。並びは「いま見えている順」に
+    // 従う (# を降順にしていれば 19 → 18 → … と再生する)。ソートや検索で
+    // アルバムの一部しか見えていない場合は、既定のディスク順 → トラック順
+    const key = albumKey(t);
+    const inView = visible.filter((x) => albumKey(x) === key);
+    const whole = state.tracks.filter((x) => albumKey(x) === key);
+    state.queue = inView.length === whole.length
+      ? inView
+      : whole.sort((a, b) => (a.disc ?? 0) - (b.disc ?? 0) ||
+          (a.track ?? 9999) - (b.track ?? 9999) || collator.compare(a.title, b.title));
+    state.queueKind = 'album';
+  } else {
+    // すべての曲 (アーティスト絞り込み・検索中含む): アーティストやアルバムの
+    // 区切りに関係なく、いま見えているリストの順番のまま下へ再生していく
+    state.queue = visible;
+    state.queueKind = 'list';
+  }
+  state.queueIdx = state.queue.indexOf(t);
   state.shuffleBag = [];
   playTrack(t);
 }

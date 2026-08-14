@@ -215,16 +215,21 @@ body {
 /* ---- デバッグ HUD (画面右下の小型カード) ---- */
 #debug-btn {
   flex-shrink: 0;
-  border: none;
+  border: 1px solid var(--border);
   background: transparent;
-  font-size: 15px;
-  padding: 8px 10px;
+  font-size: 14px;
+  line-height: 1;
+  padding: 6px 9px;
   border-radius: 8px;
   cursor: pointer;
-  filter: grayscale(1) opacity(0.55);
+  filter: grayscale(1) opacity(0.6);
 }
-#debug-btn:hover { background: var(--bg3); filter: grayscale(0.3); }
-#debug-btn.on { filter: none; background: var(--bg3); }
+#debug-btn:hover { border-color: var(--fg-dim); filter: grayscale(0.3); }
+#debug-btn.on {
+  filter: none;
+  border-color: var(--accent);
+  background: var(--bg3);
+}
 #debug-hud {
   position: fixed;
   right: 14px;

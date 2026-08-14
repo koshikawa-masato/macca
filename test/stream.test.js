@@ -88,3 +88,36 @@ test('リーダー対象外の形式は null (全体デコードへフォール�
   assert.equal(await createStreamReader({ ext: '.mp3' }, new Uint8Array(64), {}), null);
   assert.equal(await createStreamReader({ ext: '.wav' }, new Uint8Array(8), {}), null, '壊れたWAV');
 });
+
+test('FLACリーダー: 全受信済みでも done が遅れているソースで索引が収束する', async () => {
+  // 短い曲では最初の窓が最終フレームに届く。最終フレームの確定には終端の
+  // 遊びが必要で、done フラグ (イベント経由で一拍遅れる) に依存すると
+  // 「FLAC索引が収束しません」で無音になる回帰を検証する
+  const bytes = new Uint8Array(await readFile(path.join(__dirname, 'data/flac-sine.flac')));
+  const laggingSource = {
+    bytes,
+    total: bytes.byteLength,
+    get received() { return bytes.byteLength; }, // 全バイト受信済み
+    get done() { return false; },                // だが done はまだ立っていない
+    async waitFor() {},
+    async waitAll() { return bytes; },
+    cancel() {},
+  };
+  const fakeDecode = async (ab) => {
+    // 収束の検証が目的なのでデコードはダミー (十分な長さの無音を返す)
+    const len = 1 << 20;
+    return {
+      length: len,
+      numberOfChannels: 2,
+      getChannelData: () => new Float32Array(len),
+    };
+  };
+  const r = await createStreamReader({ ext: '.flac' }, laggingSource, {
+    decodeAudioData: fakeDecode,
+  });
+  assert.ok(r, 'リーダーが作れる');
+  // 曲全体 (最終フレーム含む) を要求しても例外にならず返ってくる
+  const w = await r.readWindow(0, r.totalSamples);
+  assert.ok(w.length > 0, '窓が読める');
+  r.destroy();
+});

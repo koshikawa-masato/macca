@@ -326,10 +326,18 @@ async function createFlacReader(source, decodeAudioData, ctxSampleRate) {
   async function ensureIndexed(sample) {
     let guard = 0;
     while (!idx.complete && (idx.frames.length === 0 || idx.expected <= sample)) {
-      if (++guard > 4096) throw new Error('FLAC索引が収束しません'); // 想定外でも無限ループにしない
+      if (++guard > 4096) {
+        // 想定外でも無限ループにしない。状態付きで投げて診断可能にする
+        throw new Error(`FLAC索引が収束しません (scanPos=${idx.scanPos} expected=${idx.expected} ` +
+          `total=${total} totalSamples=${header.totalSamples} received=${source.received} ` +
+          `done=${source.done} sample=${sample} frames=${idx.frames.length})`);
+      }
       const target = Math.min(total, idx.scanPos + SCAN_STEP);
       await source.waitFor(target);
-      const limit = source.done && source.received >= total ? total + 20 : source.received;
+      // 最終フレームは終端の遊び (+20) がないと確定できない。全バイト受信済みなら
+      // done フラグを待たずに遊びを付ける (done はイベント経由で一拍遅れることが
+      // あり、短い曲 = 最初の窓が最終フレームに届く場合に索引が進まなくなる)
+      const limit = source.received >= total ? total + 20 : source.received;
       const r = scanFlacFrames(bytes, header, idx.scanPos, idx.expected, limit);
       idx.frames.push(...r.frames);
       idx.expected = r.expected;

@@ -149,6 +149,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   //  - ページが閉じられている → macca のページを開き直す
   // 複数起動したい場合は Finder から macca.app をもう一度開く (ポート自動ずらし)
   func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
+    // Dock クリックでランチャー自身が最前面化するとブラウザのフォーカスが
+    // 一瞬外れてチカチカする。即座に直前のアプリへフォーカスを返し、
+    // ブラウザが最前面のままタブだけが切り替わるようにする
+    NSApp.hide(nil)
     guard let u = URL(string: url) else { return false }
     let statsURL = u.appendingPathComponent("api/stats")
     let task = URLSession.shared.dataTask(with: statsURL) { data, _, _ in

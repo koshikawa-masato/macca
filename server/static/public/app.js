@@ -1038,19 +1038,22 @@ document.querySelectorAll('.nav-item').forEach((b) => {
 });
 
 $('#rescan').addEventListener('click', async () => {
-  $('#rescan').disabled = true;
-  $('#rescan').textContent = 'スキャン中…';
   try {
     const res = await fetch('/api/rescan', { method: 'POST' });
-    applyLibrary(await res.json());
-    toast('再スキャン完了');
+    applyLibrary(await res.json()); // scanning: true が返り、ボタンが回り出す
   } catch {
     toast('再スキャンに失敗しました');
-  } finally {
-    $('#rescan').disabled = false;
-    $('#rescan').textContent = '再スキャン';
   }
 });
+
+// スキャン状況をヘッダの再スキャンボタンに反映する。
+// 起動時の裏スキャンやデバイス操作によるスキャンでも同じように回る
+function updateRescanButton() {
+  const btn = $('#rescan');
+  btn.disabled = state.scanning;
+  btn.classList.toggle('busy', Boolean(state.scanning));
+  btn.textContent = state.scanning ? 'スキャン中' : '再スキャン';
+}
 
 // ---- 初期化 ---------------------------------------------------------------
 
@@ -1105,6 +1108,7 @@ function applyLibrary(data) {
   renderStats();
   renderFormatChips();
   renderDevices();
+  updateRescanButton();
   if ($('#settings-dialog').open) renderPinnedList();
   render();
   // 読み取りエラーは「どのソースで何件か」を、件数が変わったときだけ知らせる

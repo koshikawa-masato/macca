@@ -688,7 +688,8 @@ export async function createServer(rootDir, { useCache = true, deviceLister, ext
 
       if (p === '/api/library') return serveLibrary(res);
       if (p === '/api/rescan' && req.method === 'POST') {
-        await rescan(useCache);
+        // 即応答して裏で実行 (UI は scanning フラグを見て合流する)
+        rescan(useCache);
         return serveLibrary(res);
       }
       if (p === '/api/presence') return servePresence(req, res, exitOnClose);

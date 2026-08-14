@@ -470,7 +470,14 @@ func (s *appState) serveAPI(w http.ResponseWriter, r *http.Request, useCache boo
 	case p == "/api/library" && r.Method == http.MethodGet:
 		s.serveLibrary(w)
 	case p == "/api/rescan" && r.Method == http.MethodPost:
-		_ = s.rescan(useCache)
+		// 即応答して裏で実行 (scanning フラグは応答前に立てる)
+		s.mu.RLock()
+		all := make([]*source, 0, len(s.sources))
+		for _, src := range s.sources {
+			all = append(all, src)
+		}
+		s.mu.RUnlock()
+		s.startScanJob(useCache, all)
 		s.serveLibrary(w)
 	case p == "/api/presence" && r.Method == http.MethodGet:
 		s.servePresence(w, r)

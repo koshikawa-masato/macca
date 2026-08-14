@@ -246,6 +246,8 @@ body {
 }
 #debug-hud .k { color: var(--fg-dim); }
 #debug-hud .v { color: var(--fg); word-break: break-all; }
+/* display: grid が hidden 属性の display: none を上書きしてしまうため明示する */
+#debug-hud[hidden] { display: none; }
 /* ダイアログ (フォルダ選択・固定ライブラリ設定) */
 #browse-dialog,
 #settings-dialog {

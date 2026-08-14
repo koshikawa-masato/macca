@@ -785,11 +785,22 @@ function renderDevices() {
   const sources = state.sources ?? [];
   // 固定済みだが今は検出されていないソース (未接続の NAS など) も一覧に残す
   const offline = sources.filter((s) => s.pinned && !devices.some((d) => d.id === s.id));
-  if (devices.length === 0 && offline.length === 0) {
-    el.innerHTML = '<div class="dev-empty">未接続</div>';
-    return;
-  }
-  el.innerHTML = devices.map((d) => {
+
+  // スキャン実行中は再スキャンボタンを回転表示にする (どの行から始めても
+  // 「いま読んでいる」ことが分かる。ヘッダの全体ボタンは廃止した)
+  const rescanBtn = (id, title) => state.scanning
+    ? '<button class="dev-btn busy" disabled>スキャン中</button>'
+    : `<button class="dev-btn" data-rescan="${id}" title="${esc(title)}">再スキャン</button>`;
+
+  // 固定フォルダソース (メインライブラリと --source 指定分) を先頭に置く。
+  // メインライブラリの再スキャンはここから行う
+  const fixedRows = sources.filter((s) => !s.removable).map((s) => `
+    <div class="dev-row" title="${esc(s.dir)}">
+      <div class="dev-name">📁 ${esc(s.label)}</div>
+      <div class="dev-actions"><span class="dev-count">${s.tracks} 曲</span>
+      ${rescanBtn(s.id, 'このフォルダを読み直す (追加・変更したファイルを取り込む)')}</div></div>`).join('');
+
+  const deviceRows = devices.map((d) => {
     const src = sources.find((s) => s.id === d.id);
     let count = src ? `${src.tracks} 曲` : '';
     // 裏スキャンの途中は 0 曲ではなく進行中と分かる表示にする
@@ -798,7 +809,7 @@ function renderDevices() {
     let actions;
     if (pinned) {
       actions = `<span class="pin-badge" title="固定ライブラリ (解除は ⚙ フォルダ設定から)">固定中</span>
-        <button class="dev-btn" data-rescan="${d.id}" title="このデバイスだけ読み直す">再スキャン</button>`;
+        ${rescanBtn(d.id, 'このデバイスだけ読み直す')}`;
     } else if (d.scanned) {
       actions = `<button class="dev-btn" data-eject="${d.id}" title="一覧から外す (ファイルには触れません)">解除</button>`;
     } else {
@@ -808,7 +819,9 @@ function renderDevices() {
     return `<div class="dev-row" title="${esc(d.path)}">
       <div class="dev-name">💾 ${esc(d.label)}</div>
       <div class="dev-actions"><span class="dev-count">${count}</span>${actions}</div></div>`;
-  }).join('') + offline.map((s) => {
+  }).join('');
+
+  const offlineRows = offline.map((s) => {
     // デバイス一覧に該当しない固定ソース (サブフォルダ等)。マウント中の
     // デバイス配下なら生きているので、未接続と混同しないよう表示し分ける
     const mounted = devices.some((d) => {
@@ -818,13 +831,15 @@ function renderDevices() {
     const countText = s.tracks ? `${s.tracks} 曲`
       : mounted ? (state.scanning ? 'スキャン中…' : '0 曲')
       : '未接続';
-    const rescanBtn = mounted
-      ? `<button class="dev-btn" data-rescan="${s.id}" title="この場所だけ読み直す">再スキャン</button>` : '';
     return `<div class="dev-row" title="${esc(s.dir)}">
       <div class="dev-name">💾 ${esc(s.label)}</div>
       <div class="dev-actions"><span class="dev-count">${countText}</span>
-      <span class="pin-badge">固定中</span>${rescanBtn}</div></div>`;
+      <span class="pin-badge">固定中</span>${mounted ? rescanBtn(s.id, 'この場所だけ読み直す') : ''}</div></div>`;
   }).join('');
+
+  const empty = devices.length === 0 && offline.length === 0
+    ? '<div class="dev-empty">デバイス未接続</div>' : '';
+  el.innerHTML = fixedRows + deviceRows + offlineRows + empty;
 
   el.querySelectorAll('[data-scan]').forEach((b) => b.addEventListener('click', async () => {
     deviceOpBusy = true;
@@ -1075,23 +1090,6 @@ document.querySelectorAll('.nav-item').forEach((b) => {
   });
 });
 
-$('#rescan').addEventListener('click', async () => {
-  try {
-    const res = await fetch('/api/rescan', { method: 'POST' });
-    applyLibrary(await res.json()); // scanning: true が返り、ボタンが回り出す
-  } catch {
-    toast('再スキャンに失敗しました');
-  }
-});
-
-// スキャン状況をヘッダの再スキャンボタンに反映する。
-// 起動時の裏スキャンやデバイス操作によるスキャンでも同じように回る
-function updateRescanButton() {
-  const btn = $('#rescan');
-  btn.disabled = state.scanning;
-  btn.classList.toggle('busy', Boolean(state.scanning));
-  btn.textContent = state.scanning ? 'スキャン中' : '再スキャン';
-}
 
 // ---- 初期化 ---------------------------------------------------------------
 
@@ -1146,7 +1144,6 @@ function applyLibrary(data) {
   renderStats();
   renderFormatChips();
   renderDevices();
-  updateRescanButton();
   if ($('#settings-dialog').open) renderPinnedList();
   render();
   // 読み取りエラーは「どのソースで何件か」を、件数が変わったときだけ知らせる

@@ -1,0 +1,6 @@
+Third-party notices for macca
+
+The bundled ALAC decoder (server/static/public/player/alac.wasm) is built
+from the Apple Lossless Audio Codec (https://github.com/macosforge/alac),
+which is licensed under the Apache License, Version 2.0:
+https://www.apache.org/licenses/LICENSE-2.0

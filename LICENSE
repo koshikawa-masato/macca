@@ -19,11 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
----
-
-Third-party notice:
-
-The bundled ALAC decoder (server/static/public/player/alac.wasm) is built
-from the Apple Lossless Audio Codec (https://github.com/macosforge/alac),
-which is licensed under the Apache License, Version 2.0.

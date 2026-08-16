@@ -565,6 +565,19 @@ async function serveStream(req, res, track, query) {
   const full = resolveTrackPath(track);
   if (!full) return notFound(res);
 
+  let st;
+  try {
+    st = await stat(full);
+  } catch {
+    return notFound(res, 'ファイルが見つかりません');
+  }
+  // 索引 (スキャン時) と実ファイルの大きさ・更新時刻が食い違う = スキャン後に
+  // 差し替え・上書きされたファイル。索引上の曲名や長さと中身が一致しないので
+  // 別の曲として鳴らさず 409 で知らせ、クライアント側で再スキャンしてもらう
+  if (st.size !== track.size || Math.floor(st.mtimeMs) !== track.mtime) {
+    return sendJson(res, 409, { error: 'ファイルがスキャン後に変更されています', code: 'changed' });
+  }
+
   if (query.get('transcode') === '1') {
     if (!state.ffmpeg) return sendJson(res, 501, { error: 'ffmpeg が見つかりません' });
     res.writeHead(200, {
@@ -582,12 +595,6 @@ async function serveStream(req, res, track, query) {
     return;
   }
 
-  let st;
-  try {
-    st = await stat(full);
-  } catch {
-    return notFound(res, 'ファイルが見つかりません');
-  }
   const total = st.size;
   const type = MIME_BY_EXT[track.ext] ?? 'application/octet-stream';
   const range = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range ?? '');

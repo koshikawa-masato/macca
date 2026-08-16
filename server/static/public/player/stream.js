@@ -37,7 +37,13 @@ export function staticSource(bytes) {
  */
 export async function createProgressiveSource(url) {
   const res = await fetch(url);
-  if (!res.ok) throw new Error(`fetch ${res.status}`);
+  if (!res.ok) {
+    // 呼び出し側が「ファイルが消えた/差し替えられた (404/409)」を見分けられるよう
+    // HTTP ステータスを添える
+    const err = new Error(`fetch ${res.status}`);
+    err.status = res.status;
+    throw err;
+  }
   const total = Number(res.headers.get('content-length')) || 0;
   if (!res.body || !total) {
     return staticSource(new Uint8Array(await res.arrayBuffer()));

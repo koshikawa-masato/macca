@@ -609,9 +609,17 @@ function playTrack(t) {
     engine.play(t).then(() => {
       if (state.playing === t) {
         state.loading = false;
+        staleRetried.clear(); // 無事に鳴った: 復旧の再試行記録をリセット
         updatePlayButton();
       }
-    }).catch((err) => {
+    }).catch(async (err) => {
+      if (state.playing !== t) return;
+      // ファイルが消えた/差し替えられたのなら <audio> でも鳴らないので、
+      // フォールバックせずライブラリを読み直して立て直す
+      if (await isTrackStale(t, err)) {
+        if (state.playing === t) recoverStaleTrack(t);
+        return;
+      }
       console.warn('エンジン再生に失敗、<audio> にフォールバックします:', err);
       if (state.playing === t) {
         state.loading = false;
@@ -665,6 +673,128 @@ function isPaused() {
   return state.mode === 'engine' && engine ? engine.paused : audio.paused;
 }
 
+// ---- 実ファイルとの食い違い (削除・差し替え) からの復旧 ---------------------
+//
+// 再生中にフォルダの中身が入れ替わる (曲ファイルを差し替えた・消した) と、
+// 索引にある曲とディスク上のファイルが一致しなくなり再生が失敗する。
+// その場合は「…」のまま固まらず、原因を伝えたうえでそのソースを読み直し、
+// 見ているアルバム/アーティストの内容を最新にする。まだ鳴らせる曲があれば
+// そこから再生を続け、フォルダごと消えていれば一覧へ戻す
+
+/** 再生失敗の原因が「ファイルが消えた/差し替えられた」かをサーバに確かめる */
+async function isTrackStale(t, err = null) {
+  if (err?.status === 404 || err?.status === 409) return true;
+  try {
+    const res = await fetch(`/api/stream/${t.id}`, { method: 'HEAD' });
+    return res.status === 404 || res.status === 409;
+  } catch {
+    return false; // サーバに届かないのは別の問題
+  }
+}
+
+let recovering = false;
+const staleRetried = new Set(); // 復旧後に再試行した曲 (再び失敗したら次へ進み、ループしない)
+
+async function recoverStaleTrack(t) {
+  if (recovering) return;
+  recovering = true;
+  try {
+    // 止まったまま「…」を出し続けない
+    engine?.stop();
+    audio.pause();
+    audio.removeAttribute('src');
+    state.loading = false;
+    updatePlayButton();
+    toast(`「${t.title}」のファイルが見つからないか差し替えられています。ライブラリを読み直しています…`, 8000);
+    await rescanSourceAndWait(t.src);
+    continueAfterRecovery(t);
+  } finally {
+    recovering = false;
+  }
+}
+
+/** ソースを読み直し、スキャン完了まで待って画面に反映する */
+async function rescanSourceAndWait(srcId) {
+  try {
+    const url = srcId ? `/api/source/${srcId}/rescan` : '/api/rescan';
+    const res = await fetch(url, { method: 'POST' });
+    const json = await res.json();
+    if (!res.ok) throw new Error(json.error ?? res.status);
+    applyLibrary(json);
+  } catch (err) {
+    // ソースごと外れている場合など。それでも索引だけは取り直す
+    console.warn('再スキャンを開始できませんでした:', err);
+    try { applyLibrary(await (await fetch('/api/library')).json()); } catch { /* 次の操作で再試行 */ }
+    return;
+  }
+  const t0 = Date.now();
+  while (state.scanning && Date.now() - t0 < 120000) {
+    await new Promise((r) => setTimeout(r, 700));
+    try {
+      const json = await (await fetch('/api/library')).json();
+      if (json.scannedAt !== state.scannedAt || !json.scanning) applyLibrary(json);
+      else state.scanning = json.scanning;
+    } catch { /* サーバ再起動中など: 次の周期で再試行 */ }
+  }
+}
+
+/** 読み直した索引で再生を続ける (同じ曲 → 次の残っている曲 → 停止 の順に探す) */
+function continueAfterRecovery(failed) {
+  const byId = new Map(activeTracks().map((x) => [x.id, x]));
+  const oldQueue = state.queue;
+  const oldIdx = state.queueIdx;
+  let target = null;
+  const fresh = byId.get(failed.id);
+  if (fresh && !staleRetried.has(failed.id)) {
+    target = fresh; // 同じ場所に (差し替わった) ファイルがある: その曲を鳴らす
+  } else if (state.playMode !== 'one' && state.playMode !== 'repeat-one') {
+    // 失敗した曲の次以降で、まだ存在する曲へ
+    const wraps = ['repeat-all', 'repeat-album', 'shuffle-album'].includes(state.playMode);
+    const order = [];
+    for (let k = oldIdx + 1; k < oldQueue.length; k++) order.push(k);
+    if (wraps) for (let k = 0; k < oldIdx; k++) order.push(k);
+    for (const k of order) {
+      const q = byId.get(oldQueue[k].id);
+      if (q && q.id !== failed.id && !staleRetried.has(q.id)) { target = q; break; }
+    }
+  }
+  // キューを新しい索引に写し替える (消えた曲は落とす)
+  state.queue = oldQueue.map((q) => byId.get(q.id)).filter(Boolean);
+  state.shuffleBag = [];
+  if (!target) {
+    state.queueIdx = -1;
+    clearNowPlaying();
+    toast('ライブラリを読み直しました。続けて再生できる曲がないため停止しました', 5000);
+    return;
+  }
+  staleRetried.add(target.id);
+  state.queueIdx = state.queue.indexOf(target);
+  toast(target.id === failed.id
+    ? `ライブラリを読み直しました。「${target.title}」を再生します`
+    : `ライブラリを読み直しました。次の曲「${target.title}」から続けます`, 5000);
+  playTrack(target);
+}
+
+/** 再生バーを未再生の状態に戻す */
+function clearNowPlaying() {
+  state.playing = null;
+  state.loading = false;
+  $('#np-title').textContent = '—';
+  $('#np-artist').textContent = '';
+  $('#np-badge').hidden = true;
+  const art = $('#np-art');
+  art.hidden = true;
+  art.removeAttribute('src');
+  $('#np-art-placeholder').style.display = '';
+  $('#time-cur').textContent = '0:00';
+  $('#time-total').textContent = '0:00';
+  $('#seekbar').value = 0;
+  document.querySelectorAll('tr.song.playing').forEach((tr) => tr.classList.remove('playing'));
+  document.title = 'macca — ローカル音楽ライブラリ';
+  if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'none';
+  updatePlayButton();
+}
+
 function togglePlay() {
   if (state.mode === 'engine' && engine) {
     if (!engine.playingTrack) return;
@@ -678,7 +808,7 @@ function togglePlay() {
 }
 
 function updatePlayButton() {
-  $('#btn-play').textContent = state.loading ? '…' : isPaused() ? '▶' : '⏸';
+  $('#btn-play').textContent = state.loading ? '…' : (!state.playing || isPaused()) ? '▶' : '⏸';
   syncMediaAnchor();
 }
 
@@ -816,13 +946,21 @@ audio.addEventListener('waiting', () => {
 });
 audio.addEventListener('playing', () => {
   state.loading = false;
+  staleRetried.clear(); // 無事に鳴った: 復旧の再試行記録をリセット
   updatePlayButton();
 });
-audio.addEventListener('error', () => {
+audio.addEventListener('error', async () => {
   if (!audio.src) return;
   const t = state.playing;
-  if (t && !canPlayNatively(t) && !state.ffmpeg) return; // 既に警告済み
-  if (t) toast(`再生できませんでした: ${t.title}`);
+  if (!t) return;
+  if (await isTrackStale(t)) {
+    if (state.playing === t) recoverStaleTrack(t);
+    return;
+  }
+  state.loading = false; // 'waiting' で立てた「…」を消す
+  updatePlayButton();
+  if (!canPlayNatively(t) && !state.ffmpeg) return; // 既に警告済み
+  toast(`再生できませんでした: ${t.title}`);
 });
 
 let seekDragging = false;
@@ -1367,6 +1505,40 @@ function watchScanning(data) {
   }, 3000);
 }
 
+/**
+ * 読み直した索引に、選択中のアルバム/アーティストがもう存在しなければ
+ * (フォルダごと消えた等) 選択を外し、その曲一覧を見ていたなら一覧へ戻す。
+ * 戻したとき true (呼び出し側の再描画は不要)
+ */
+function reconcileSelection() {
+  const tracks = activeTracks();
+  let moved = false;
+  if (state.filterAlbum !== null && !tracks.some((t) => albumKey(t) === state.filterAlbum)) {
+    const name = albumName(state.filterAlbum);
+    const showing = state.view === 'songs' && state.albumActive;
+    state.filterAlbum = null;
+    state.albumActive = false;
+    if (showing) {
+      setView('albums');
+      toast(`アルバム「${name}」が見つからなくなったため、アルバム一覧に戻りました`, 6000);
+      moved = true;
+    }
+  }
+  if (state.filterArtist !== null && !tracks.some((t) =>
+    (t.artist ?? '') === state.filterArtist || (t.albumArtist ?? '') === state.filterArtist)) {
+    const name = state.filterArtist || '(不明なアーティスト)';
+    const showing = state.view === 'songs' && state.artistActive;
+    state.filterArtist = null;
+    state.artistActive = false;
+    if (showing) {
+      setView('artists');
+      toast(`アーティスト「${name}」が見つからなくなったため、アーティスト一覧に戻りました`, 6000);
+      moved = true;
+    }
+  }
+  return moved;
+}
+
 function applyLibrary(data) {
   state.tracks = data.tracks;
   state.ffmpeg = data.ffmpeg;
@@ -1393,7 +1565,7 @@ function applyLibrary(data) {
   renderFormatChips();
   renderDevices();
   if ($('#settings-dialog').open) renderPinnedList();
-  render();
+  if (!reconcileSelection()) render(); // 一覧へ戻した場合は setView が描画済み
   // 読み取りエラーは「どのソースで何件か」を、件数が変わったときだけ知らせる
   // (毎回ライブラリ全体の累計を出すと、無関係なソースのスキャンでも出て紛らわしい)
   if (data.errors > 0 && data.errors !== state.lastErrorCount) {

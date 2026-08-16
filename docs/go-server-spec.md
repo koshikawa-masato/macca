@@ -91,6 +91,9 @@ localhost サーバのメモリ・CPU 負荷を最大限下げる。あわせて
   成功で library を返す
 - `DELETE /api/source/{12hex}` → removable のみ削除可（メインは 400、不明 ID は 404）。library を返す
 - `GET|HEAD /api/stream/{16hex}`
+  - 配信前に実ファイルの size / mtime(ms 切り捨て) を索引と照合し、食い違えば
+    409 `{"error": …, "code": "changed"}` (スキャン後に差し替え・上書きされたファイルを
+    別の曲として鳴らさない。クライアントは再スキャンして立て直す)。ファイルが無ければ 404
   - Range 対応: `bytes=a-b` / `bytes=a-` / `bytes=-suffix`、200/206/416、
     `Accept-Ranges: bytes`, `Content-Range: bytes a-b/total`
   - `?transcode=1`: ffmpeg (`-acodec pcm_s16le -f wav pipe:1`) を spawn して

@@ -801,8 +801,7 @@ func scanLibrary(rootDir string, useCache bool) ([]track, []scanError) {
 				}
 				// Node の stats.mtimeMs (sec*1000 + nsec/1e6 の double) とビット一致させる。
 				// UnixNano() は float64 の仮数を超えて丸めが入るため使わない
-				mt := st.ModTime()
-				mtimeMs := float64(mt.Unix())*1000 + float64(mt.Nanosecond())/1e6
+				mtimeMs := fileMtimeMsFloat(st)
 				var meta metadataResult
 				if c, ok := cache[rel]; ok && c.MtimeMs == mtimeMs && c.Size == st.Size() {
 					meta = c.Meta
@@ -1901,10 +1900,6 @@ func (s *appState) serveStream(w http.ResponseWriter, r *http.Request, id string
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 		return
 	}
-	if r.URL.Query().Get("transcode") == "1" {
-		s.serveTranscode(w, r, full)
-		return
-	}
 	f, err := os.Open(full)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "ファイルが見つかりません"})
@@ -1914,6 +1909,17 @@ func (s *appState) serveStream(w http.ResponseWriter, r *http.Request, id string
 	st, err := f.Stat()
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "ファイルが見つかりません"})
+		return
+	}
+	// 索引 (スキャン時) と実ファイルの大きさ・更新時刻が食い違う = スキャン後に
+	// 差し替え・上書きされたファイル。索引上の曲名や長さと中身が一致しないので
+	// 別の曲として鳴らさず 409 で知らせ、クライアント側で再スキャンしてもらう
+	if st.Size() != t.Size || fileMtimeMs(st) != t.Mtime {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "ファイルがスキャン後に変更されています", "code": "changed"})
+		return
+	}
+	if r.URL.Query().Get("transcode") == "1" {
+		s.serveTranscode(w, r, full)
 		return
 	}
 	total := st.Size()
@@ -2097,6 +2103,18 @@ func (s *appState) findFolderArt(dir string) string {
 	s.folderArt[dir] = found
 	s.mu.Unlock()
 	return found
+}
+
+// Node の stats.mtimeMs (sec*1000 + nsec/1e6 の double) とビット一致させる。
+// UnixNano() は float64 の仮数を超えて丸めが入るため使わない
+func fileMtimeMsFloat(st os.FileInfo) float64 {
+	mt := st.ModTime()
+	return float64(mt.Unix())*1000 + float64(mt.Nanosecond())/1e6
+}
+
+// track.Mtime と同じ丸め (切り捨て) の ms 値
+func fileMtimeMs(st os.FileInfo) int64 {
+	return int64(fileMtimeMsFloat(st))
 }
 
 func (s *appState) resolveTrackPath(t track) (string, bool) {
